@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#121213">
+<title>Wordle</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Wordle</h1>
+    <form method="post" action="/logout">
+      <button class="link" type="submit">Sign out</button>
+    </form>
+  </header>
+
+  <main>
+    <!-- Tiles and keys are built by app.js from the board the API returns. -->
+    <div id="board" class="board" role="grid" aria-label="Guesses"></div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="keyboard" class="keyboard" aria-label="Keyboard"></div>
+  </main>
+
+  <div id="result" class="result" hidden>
+    <div class="card" role="dialog" aria-modal="true" aria-labelledby="result-title">
+      <h2 id="result-title"></h2>
+      <p id="result-text"></p>
+      <button id="again" class="primary" type="button">Play again</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
