@@ -18,3 +18,6 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+
+# Poetry-managed project venv
+backend/.venv/
