@@ -21,3 +21,4 @@ htmlcov/
 
 # Poetry-managed project venv
 backend/.venv/
+backend/dist/

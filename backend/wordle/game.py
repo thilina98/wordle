@@ -14,9 +14,9 @@ MAX_ATTEMPTS = 5
 class Colour(StrEnum):
     """Feedback for one letter. The frontend maps these to actual colours."""
 
-    HIT = "hit"          # right letter, right place
+    HIT = "hit"  # right letter, right place
     PRESENT = "present"  # right letter, wrong place
-    MISS = "miss"        # letter not available
+    MISS = "miss"  # letter not available
 
 
 # Ranked worst to best, so a letter's known state can only improve.
