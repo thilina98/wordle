@@ -6,7 +6,8 @@ Not planned, not scoped. Just things worth doing.
 The users currently only can ply 830 words. (game only chooses 830).
 users can guess 14,855 valid words. 
 I think 830 is a little less. we need find more common playable words and extend the list.
-the problem with using the 14855 list as playable -> there are some words like **
+the problem with using the 14855 list as playable -> there are some words like **aalii** which are 
+real words technically, but not common words. so having users to guess such words is not good.
 
 ## 1. Word requests
 
