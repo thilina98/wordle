@@ -4,10 +4,6 @@ import pytest
 
 from wordle.game import Colour, GameOverError, GameState, InvalidGuessError, evaluate_guess
 
-VOCABULARY = frozenset(
-    {"crane", "caner", "geese", "abbey", "babes", "state", "tasty", "cynic", "spilt"}
-)
-
 G, Y, X = Colour.HIT, Colour.PRESENT, Colour.MISS
 
 
@@ -46,7 +42,7 @@ class TestEvaluateGuess:
 
 class TestGameState:
     def _game(self, target="crane", max_attempts=5):
-        return GameState(target=target, vocabulary=VOCABULARY, max_attempts=max_attempts)
+        return GameState(target=target, max_attempts=max_attempts)
 
     def test_starts_in_progress_with_no_attempts(self):
         game = self._game()
@@ -87,10 +83,6 @@ class TestGameState:
     def test_guess_normalised_to_lowercase(self):
         assert self._game().guess("CRANE").guess == "crane"
 
-    def test_rejects_word_outside_vocabulary(self):
-        with pytest.raises(InvalidGuessError):
-            self._game().guess("zzzzz")
-
     def test_rejects_wrong_length(self):
         with pytest.raises(InvalidGuessError):
             self._game().guess("cran")
@@ -105,15 +97,15 @@ class TestGameState:
         with pytest.raises(GameOverError):
             game.guess("crane")
 
-    def test_invalid_guess_does_not_consume_an_attempt(self):
+    def test_misshapen_guess_does_not_consume_an_attempt(self):
         game = self._game()
         with pytest.raises(InvalidGuessError):
-            game.guess("zzzzz")
+            game.guess("cran")
         assert game.attempts_remaining == 5
 
-    def test_rejects_target_missing_from_vocabulary(self):
+    def test_rejects_a_non_alphabetic_target(self):
         with pytest.raises(ValueError):
-            GameState(target="zzzzz", vocabulary=VOCABULARY)
+            GameState(target="cr4ne")
 
     def test_letter_states_track_best_result_per_letter(self):
         game = self._game()
@@ -128,6 +120,27 @@ class TestGameState:
         game.guess("spilt")
         assert game.letter_states["s"] == X
         assert "c" not in game.letter_states
+
+    def test_any_word_of_the_right_length_is_playable(self):
+        # No dictionary check: the game must not reveal which strings it knows.
+        game = self._game()
+        attempt = game.guess("zzzzz")
+        assert attempt.guess == "zzzzz"
+        assert attempt.colours == [X, X, X, X, X]
+        assert game.attempts_remaining == 4
+
+    def test_an_unlisted_word_is_scored_like_any_other(self):
+        assert self._game().guess("recan").colours == [Y, Y, Y, Y, Y]
+
+    def test_an_unlisted_word_can_win(self):
+        game = self._game(target="zzzzz")
+        game.guess("zzzzz")
+        assert game.is_won
+
+    def test_unlisted_guesses_colour_the_keyboard(self):
+        game = self._game()
+        game.guess("zzzzz")
+        assert game.letter_states == {"z": X}
 
     def test_letter_state_never_downgrades(self):
         game = self._game(target="state")

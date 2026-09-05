@@ -203,11 +203,20 @@ class TestGuessing:
         states = guess(client, board["game_id"], "state").json()["letter_states"]
         assert states == {"s": "miss", "t": "miss", "a": "hit", "e": "hit"}
 
-    def test_rejects_a_word_outside_the_list(self, client):
+    def test_plays_a_word_that_is_not_in_the_list(self, client, answer):
+        # No dictionary check: an unlisted word is scored and costs an attempt.
+        answer("crane")
         board = new_game(client)
-        response = guess(client, board["game_id"], "zzzzz")
-        assert response.status_code == 400
-        assert response.json()["detail"] == "Not in word list"
+        result = guess(client, board["game_id"], "zzzzz").json()
+        assert result["attempts"][0]["guess"] == "zzzzz"
+        assert result["attempts"][0]["colours"] == ["miss"] * 5
+        assert result["attempts_remaining"] == 4
+
+    def test_an_unlisted_word_scores_normally(self, client, answer):
+        answer("crane")
+        board = new_game(client)
+        result = guess(client, board["game_id"], "recan").json()
+        assert result["attempts"][0]["colours"] == ["present"] * 5
 
     def test_rejects_the_wrong_length(self, client):
         response = guess(client, new_game(client)["game_id"], "cran")
@@ -219,7 +228,7 @@ class TestGuessing:
 
     def test_a_rejected_guess_costs_nothing(self, client):
         game_id = new_game(client)["game_id"]
-        guess(client, game_id, "zzzzz")
+        guess(client, game_id, "cran")
         assert client.get(f"/api/games/{game_id}").json()["attempts_remaining"] == 5
 
     def test_rejects_an_oversized_payload(self, client):

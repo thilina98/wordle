@@ -104,10 +104,8 @@ def check_session() -> dict[str, bool]:
 )
 def create_game(request: Request) -> GameView:
     """Start a game with a random answer."""
-    repository = _repository(request)
     game = GameState(
-        target=repository.random_word(),
-        vocabulary=repository.vocabulary,
+        target=_repository(request).random_word(),
         max_attempts=_settings(request).max_attempts,
     )
     return GameView.of(_store(request).create(game), game)

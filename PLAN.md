@@ -83,6 +83,7 @@ Each step is one commit, tests written before the code.
 1. Teardown, plan, gitignore.
 2. Poetry project, modern pins, Python 3.13 venv.
 3. `game.py` — colour evaluation incl. duplicate letters, attempt tracking.
+   Guesses are checked for shape only, never against a dictionary.
 4. `words.py` — CSV loading, validation, random selection.
 5. `store.py` — game persistence with TTL eviction.
 6. `security.py` — password verification, throttling.

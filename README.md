@@ -161,9 +161,13 @@ A board looks like this. `answer` stays `null` until the game ends:
 }
 ```
 
-Guess errors are specific, so the page can say something useful: `400` with
-`"Not in word list"`, `"Guess must be 5 letters"` or `"Guess must contain
-letters only"`. A rejected guess costs no attempt. `409` means the game is over,
+**Guesses are not checked against a dictionary.** Any five letters are scored
+and cost an attempt, including strings that are not words. The word list picks
+the answer; it does not police guesses, so the game never tells a player which
+strings it happens to know.
+
+`400` is only for the wrong shape — `"Guess must be 5 letters"` or `"Guess must
+contain letters only"` — and costs no attempt. `409` means the game is over,
 `404` that it expired or never existed, `401` that the token is missing, forged
 or stale.
 
@@ -191,6 +195,8 @@ the password protects is playing, not downloading an empty board.
 `backend/wordle/data/words.csv`, one word per row under a `word` header. Every
 row must be a five-letter alphabetic word; a bad row stops startup with the
 offending line number rather than being quietly skipped.
+
+The list supplies answers only. Guesses are never checked against it.
 
 Swapping in a database means reimplementing `WordRepository` and nothing else.
 
