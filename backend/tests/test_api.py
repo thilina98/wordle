@@ -206,7 +206,7 @@ class TestGuessing:
     def test_rejects_something_that_is_not_a_word(self, client):
         response = guess(client, new_game(client)["game_id"], "zzzzz")
         assert response.status_code == 400
-        assert response.json()["detail"] == "Not a valid word"
+        assert response.json()["detail"] == "Enter a valid word"
 
     def test_accepts_a_real_word_that_is_never_an_answer(self, client, answer):
         # Guesses come from the dictionary, which is far larger than the

@@ -22,3 +22,6 @@ htmlcov/
 # Poetry-managed project venv
 backend/.venv/
 backend/dist/
+
+# Runtime state (see IMPROVEMENTS.md item 1)
+backend/data/

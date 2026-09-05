@@ -102,10 +102,19 @@ class TestTokens:
         with pytest.raises(TokenError):
             verify_token(issue_token("some-other-secret-key"), self.KEY, max_age=60)
 
-    def test_rejects_a_tampered_token(self):
-        token = issue_token(self.KEY)
+    def test_rejects_a_tampered_payload(self):
+        # Mutate the payload, not the trailing signature character: base64
+        # carries spare bits at the end, so flipping the last character can
+        # decode to the same bytes and the test would pass by luck.
+        payload, timestamp, signature = issue_token(self.KEY).split(".")
+        swapped = ("A" if payload[0] != "A" else "B") + payload[1:]
         with pytest.raises(TokenError):
-            verify_token(token[:-1] + ("A" if token[-1] != "A" else "B"), self.KEY, max_age=60)
+            verify_token(f"{swapped}.{timestamp}.{signature}", self.KEY, max_age=60)
+
+    def test_rejects_a_tampered_signature(self):
+        payload, timestamp, signature = issue_token(self.KEY).split(".")
+        with pytest.raises(TokenError):
+            verify_token(f"{payload}.{timestamp}.{'x' * len(signature)}", self.KEY, max_age=60)
 
     def test_rejects_gibberish(self):
         with pytest.raises(TokenError):

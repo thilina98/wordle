@@ -135,7 +135,7 @@ class GameState:
         if not word.isalpha():
             raise InvalidGuessError("Guess must contain letters only")
         if word not in self.vocabulary:
-            raise InvalidGuessError("Not a valid word")
+            raise InvalidGuessError("Enter a valid word")
 
         attempt = Attempt(guess=word, colours=evaluate_guess(self.target, word))
         self.attempts.append(attempt)

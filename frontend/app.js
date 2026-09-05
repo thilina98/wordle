@@ -252,7 +252,7 @@ async function submit() {
     if (error.status === 401) {
       sessionLost();
     } else if (error.status === 400) {
-      toast(error.message, 'error');   // e.g. "Not a valid word"
+      toast(error.message, 'error');   // e.g. "Enter a valid word"
       rejectRow();
     } else if (error.status === 404) {
       toast('That game expired. Starting a new one.', 'error');

@@ -22,8 +22,8 @@ port 8080                       port 8000
 Neither directory imports from the other. The backend serves no HTML; the
 frontend contains no game rules.
 
-See [PLAN.md](PLAN.md) for the design and [DEPLOYMENT.md](DEPLOYMENT.md) for
-running it on a VPS.
+See [PLAN.md](PLAN.md) for the design, [DEPLOYMENT.md](DEPLOYMENT.md) for
+running it on a VPS, and [IMPROVEMENTS.md](IMPROVEMENTS.md) for planned work.
 
 ## Why the split is strict
 
@@ -163,7 +163,7 @@ A board looks like this. `answer` stays `null` until the game ends:
 ```
 
 Guess errors are specific, so the page can say something useful: `400` with
-`"Not a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
+`"Enter a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
 letters only"`. A rejected guess costs no attempt. `409` means the game is over,
 `404` that it expired or never existed, `401` that the token is missing, forged
 or stale.

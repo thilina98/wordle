@@ -144,7 +144,7 @@ class TestGameState:
         assert "c" not in game.letter_states
 
     def test_rejects_a_non_word(self):
-        with pytest.raises(InvalidGuessError, match="Not a valid word"):
+        with pytest.raises(InvalidGuessError, match="Enter a valid word"):
             self._game().guess("zzzzz")
 
     def test_a_real_word_need_not_be_an_answer(self):
