@@ -7,13 +7,15 @@ own. The two talk over the routes in api.py and share nothing else.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager, suppress
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router as api_router
 from .config import Settings, get_settings
 from .security import LoginThrottle
-from .store import InMemoryGameStore
+from .store import GameStore, InMemoryGameStore, SqliteGameStore
 from .words import WordRepository
 
 
@@ -31,12 +33,34 @@ def _word_lists(settings: Settings) -> tuple[WordRepository, WordRepository]:
     return WordRepository.default_pair(word_length=settings.word_length)
 
 
+def _game_store(settings: Settings, dictionary: WordRepository) -> GameStore:
+    """Games on disk by default, so a container rebuild does not end them."""
+    if settings.store == "memory":
+        return InMemoryGameStore(
+            ttl_seconds=settings.game_ttl_seconds, max_games=settings.max_games
+        )
+    return SqliteGameStore(
+        settings.data_dir / "games.db",
+        vocabulary=dictionary.vocabulary,
+        ttl_seconds=settings.game_ttl_seconds,
+        max_games=settings.max_games,
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     answers, dictionary = _word_lists(settings)
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        # Release the database connection on a clean shutdown.
+        with suppress(AttributeError):
+            app.state.store.close()
+
     app = FastAPI(
+        lifespan=lifespan,
         title="Wordle API",
         version="2.0.0",
         # The schema maps the protected routes; keep it off the public internet.
@@ -47,9 +71,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.answers = answers
     app.state.dictionary = dictionary
-    app.state.store = InMemoryGameStore(
-        ttl_seconds=settings.game_ttl_seconds, max_games=settings.max_games
-    )
+    app.state.store = _game_store(settings, dictionary)
     app.state.throttle = LoginThrottle(
         max_failures=settings.login_max_failures,
         lockout_seconds=settings.login_lockout_seconds,

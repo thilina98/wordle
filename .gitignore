@@ -25,3 +25,7 @@ backend/dist/
 
 # Runtime state (see IMPROVEMENTS.md item 1)
 backend/data/
+
+# Docker secrets — contents are never committed
+secrets/*
+!secrets/README.md

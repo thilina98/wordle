@@ -33,7 +33,7 @@ def dictionary_path(tmp_path) -> Path:
 
 
 @pytest.fixture
-def settings(answers_path, dictionary_path) -> Settings:
+def settings(answers_path, dictionary_path, tmp_path) -> Settings:
     return Settings(
         password=PASSWORD,
         secret_key=SECRET_KEY,
@@ -41,12 +41,18 @@ def settings(answers_path, dictionary_path) -> Settings:
         dictionary_path=dictionary_path,
         allowed_origins=[ORIGIN],
         max_attempts=5,
+        data_dir=tmp_path / "state",
     )
 
 
 @pytest.fixture
 def app(settings):
-    return create_app(settings)
+    app = create_app(settings)
+    yield app
+    # The sqlite store holds an open connection; tests do not run lifespan.
+    close = getattr(app.state.store, "close", None)
+    if close:
+        close()
 
 
 @pytest.fixture
@@ -69,11 +75,28 @@ def client(app) -> TestClient:
     return client
 
 
-def authed(settings: Settings) -> TestClient:
-    """A logged-in client for a one-off settings variation."""
-    client = TestClient(create_app(settings))
-    client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
-    return client
+@pytest.fixture
+def make_client():
+    """Build clients for one-off settings variations, and clean them up.
+
+    The sqlite store keeps a connection open, so every app a test builds has
+    to be closed or the suite leaks file descriptors.
+    """
+    built = []
+
+    def build(settings: Settings, login: bool = True) -> TestClient:
+        app = create_app(settings)
+        built.append(app)
+        client = TestClient(app)
+        if login:
+            client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
+        return client
+
+    yield build
+    for app in built:
+        close = getattr(app.state.store, "close", None)
+        if close:
+            close()
 
 
 @pytest.fixture

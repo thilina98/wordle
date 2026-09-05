@@ -2,10 +2,7 @@
 
 import time
 
-from fastapi.testclient import TestClient
-
-from tests.conftest import ORIGIN, PASSWORD, authed, obtain_token
-from wordle.app import create_app
+from tests.conftest import ORIGIN, PASSWORD
 from wordle.security import issue_token
 
 
@@ -60,19 +57,19 @@ class TestLogin:
     def test_never_echoes_the_password_back(self, anon):
         assert PASSWORD not in anon.post("/api/login", json={"password": PASSWORD}).text
 
-    def test_repeated_failures_are_throttled(self, settings):
+    def test_repeated_failures_are_throttled(self, settings, make_client):
         settings.login_max_failures = 3
-        client = TestClient(create_app(settings))
+        client = make_client(settings, login=False)
         for _ in range(3):
             client.post("/api/login", json={"password": "wrong"})
         response = client.post("/api/login", json={"password": "wrong"})
         assert response.status_code == 429
         assert "Retry-After" in response.headers
 
-    def test_throttle_blocks_even_the_right_password(self, settings):
+    def test_throttle_blocks_even_the_right_password(self, settings, make_client):
         # Otherwise the lockout would be trivially bypassed by a lucky guess.
         settings.login_max_failures = 2
-        client = TestClient(create_app(settings))
+        client = make_client(settings, login=False)
         for _ in range(2):
             client.post("/api/login", json={"password": "wrong"})
         assert client.post("/api/login", json={"password": PASSWORD}).status_code == 429
@@ -98,10 +95,9 @@ class TestTokenGate:
             anon.headers["Authorization"] = header
             assert anon.post("/api/games").status_code == 401
 
-    def test_rejects_an_expired_token(self, settings):
+    def test_rejects_an_expired_token(self, settings, make_client):
         settings.token_max_age = 60
-        client = TestClient(create_app(settings))
-        client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
+        client = make_client(settings)
         assert client.post("/api/games").status_code == 201
 
         # itsdangerous stamps wall-clock time into the token.
@@ -185,9 +181,9 @@ class TestGuessing:
         assert result["is_over"] is True
         assert result["answer"] == "crane"
 
-    def test_running_out_reveals_the_answer(self, settings):
+    def test_running_out_reveals_the_answer(self, settings, make_client):
         settings.max_attempts = 2
-        client = authed(settings)
+        client = make_client(settings)
         client.app.state.answers.random_word = lambda rng=None: "crane"
 
         board = new_game(client)

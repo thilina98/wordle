@@ -3,56 +3,108 @@
 # Host networking, so both answer on IPv6 and IPv4 without turning on IPv6 in
 # the Docker daemon. See DEPLOYMENT.md.
 #
-# The two URLs below are what the *browser* uses, not what the containers use.
-# They must be addresses a visitor can actually reach:
+# The two URLs in .env are what the *browser* uses, not what the containers
+# use. They must be addresses a visitor can actually reach:
 #   WORDLE_API_BASE        where the browser finds the API   -> baked into config.js
 #   WORDLE_ALLOWED_ORIGINS where the browser loaded the page -> the API's CORS list
 # Get either wrong and the page loads but every request fails.
 
+x-hardening: &hardening
+  # No process in either container ever needs to gain privileges.
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+
 services:
   api:
-    build: ./backend
-    image: wordle-api:2.0.0
+    <<: *hardening
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: wordle-api:2.1.0
     container_name: wordle-api
-    restart: unless-stopped
     network_mode: host
-    env_file: .env
-    command:
-      - uvicorn
-      - wordle.app:create_app
-      - --factory
-      - --host
-      - "::"            # dual-stack: answers on IPv6 and IPv4
-      - --port
-      - "8000"
-      - --workers
-      - "1"             # must stay 1: games are held in process memory
-      - --proxy-headers
-      - --forwarded-allow-ips
-      - "*"
+    user: "10001:10001"
+
+    # Secrets as files, not environment variables: `docker inspect` and
+    # /proc/<pid>/environ both expose the environment, neither exposes these.
+    secrets:
+      - wordle_password
+      - wordle_secret_key
+
+    environment:
+      WORDLE_DATA_DIR: /data
+      WORDLE_STORE: sqlite
+      WORDLE_ALLOWED_ORIGINS: ${WORDLE_ALLOWED_ORIGINS:-http://localhost:8080}
+      WORDLE_TOKEN_MAX_AGE: ${WORDLE_TOKEN_MAX_AGE:-43200}
+      WORDLE_MAX_ATTEMPTS: ${WORDLE_MAX_ATTEMPTS:-5}
+      WORDLE_GAME_TTL_SECONDS: ${WORDLE_GAME_TTL_SECONDS:-14400}
+      WORDLE_LOGIN_MAX_FAILURES: ${WORDLE_LOGIN_MAX_FAILURES:-10}
+
+    # Games in progress. Survives `docker compose down`, image rebuilds and
+    # the container being destroyed. Removed only by `docker volume rm`.
+    volumes:
+      - wordle-data:/data
+
+    # The image is immutable at runtime; the only writable path is the volume.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
     deploy:
       resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
+        limits: { memory: 512M, cpus: "1.0" }
+        reservations: { memory: 128M }
+
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
 
   web:
-    build: ./frontend
-    image: wordle-web:2.0.0
+    <<: *hardening
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: wordle-web:2.1.0
     container_name: wordle-web
-    restart: unless-stopped
     network_mode: host
+    user: "101:101"
+
     environment:
-      # Rewritten into config.js at container start.
+      # Rewritten into config.js when the container starts.
       WORDLE_API_BASE: ${WORDLE_API_BASE:-http://localhost:8000}
+
+    read_only: true
+    tmpfs:
+      # nginx writes its pid and temp bodies here, and the entrypoint writes
+      # config.js here. Not the web root: a tmpfs over it would hide the files
+      # the image copied in.
+      - /tmp:size=16m,mode=1777
+      - /var/cache/nginx:size=16m,mode=0770,uid=101,gid=101
+
+    depends_on:
+      api:
+        condition: service_healthy
+
     deploy:
       resources:
-        limits:
-          memory: 64M
-          cpus: "0.5"
-    logging:
-      driver: json-file
-      options: { max-size: "10m", max-file: "3" }
+        limits: { memory: 64M, cpus: "0.5" }
+
+
+secrets:
+  wordle_password:
+    file: ./secrets/wordle_password
+  wordle_secret_key:
+    file: ./secrets/wordle_secret_key
+
+volumes:
+  wordle-data:
+    name: wordle-data

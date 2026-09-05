@@ -23,7 +23,7 @@ Neither directory imports from the other. The backend serves no HTML; the
 frontend contains no game rules.
 
 See [PLAN.md](PLAN.md) for the design, [DEPLOYMENT.md](DEPLOYMENT.md) for
-running it on a VPS, and [IMPROVEMENTS.md](IMPROVEMENTS.md) for planned work.
+running it on a VPS, and [IMPROVEMENTS.md](IMPROVEMENTS.md) for ideas not yet built.
 
 ## Why the split is strict
 
@@ -74,8 +74,8 @@ The frontend needs no build step and no Node. Any static server will do;
 
 ```bash
 cd backend
-.venv/bin/python -m pytest                  # 124 tests
-.venv/bin/python -m pytest --cov=wordle     # 98% coverage
+.venv/bin/python -m pytest                  # 154 tests
+.venv/bin/python -m pytest --cov=wordle     # 97% coverage
 .venv/bin/ruff check . && .venv/bin/ruff format --check .
 ```
 
@@ -117,6 +117,8 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_WORD_LENGTH` | `5` | Must match the word list. |
 | `WORDLE_ANSWERS_PATH` | shipped CSV | Override the answer list. |
 | `WORDLE_DICTIONARY_PATH` | shipped CSV | Override the allowed-guess list. |
+| `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
+| `WORDLE_DATA_DIR` | `data` | Where the game database lives. Mount a volume here. |
 | `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
 | `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
 | `WORDLE_LOGIN_MAX_FAILURES` | `10` | Failures before a lockout. |
@@ -124,6 +126,12 @@ from `.env` at the repo root. See [.env.example](.env.example).
 
 The API refuses to start without a password and a secret key. There is no
 fallback for either, because a default secret is not a secret.
+
+**Secrets are files, not variables.** In Docker they come from `secrets/` and
+are mounted at `/run/secrets/`, because `docker inspect` and
+`/proc/<pid>/environ` both expose the environment and neither exposes a file.
+Running locally without Docker, `.env` is read instead. See
+[secrets/README.md](secrets/README.md).
 
 ## API
 
@@ -141,7 +149,7 @@ JSON everywhere. Every route except `/healthz` and `/api/login` needs
 
 ```bash
 TOKEN=$(curl -s localhost:8000/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"letmein"}' | jq -r .token)
+  -H 'Content-Type: application/json' -d '{"password":"'"$WORDLE_PASSWORD"'"}' | jq -r .token)
 
 curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN"
 ```
@@ -211,11 +219,22 @@ player to discover it.
 
 Swapping in a database means reimplementing `WordRepository` and nothing else.
 
+## Storage
+
+Games are the only state the app has. By default they go in SQLite under
+`WORDLE_DATA_DIR`, so destroying and rebuilding the container does not end
+anyone's game. In Docker that directory is a named volume, `wordle-data`, which
+outlives `docker compose down` and only goes away with `docker volume rm`.
+
+`WORDLE_STORE=memory` switches to the in-process store, which is faster and
+loses everything on restart. Both implement the same `GameStore` protocol and
+run against the same contract tests.
+
 ## Known limits
 
-- **Games live in memory**, so run exactly one worker. A second worker would not
-  see games created by the first. Moving to Redis means implementing the
-  `GameStore` protocol.
+- **Run exactly one worker.** SQLite takes one writer, and the login throttle
+  is per process. Scaling out means Redis or Postgres behind the `GameStore`
+  protocol.
 - **The login throttle is per process** — a speed bump, not a real rate limit.
   Put one at the reverse proxy for an internet-facing deployment.
 - **One shared password**, no accounts. Everyone who has it sees the same game.

@@ -133,6 +133,8 @@ def submit_guess(request: Request, game_id: str, payload: GuessRequest) -> GameV
     except GameOverError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except InvalidGuessError as exc:
-        # Rejected guesses cost the player nothing.
+        # Rejected guesses cost the player nothing, so nothing is saved.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    _store(request).save(game_id, game)
     return GameView.of(game_id, game)

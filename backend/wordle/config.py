@@ -9,12 +9,17 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .game import MAX_ATTEMPTS, WORD_LENGTH
+
+# Docker mounts secrets here before the process starts, so testing for it at
+# import time is safe. Outside a container the directory is absent and
+# pydantic-settings would warn about it on every construction.
+_DOCKER_SECRETS = Path("/run/secrets")
 
 
 class Settings(BaseSettings):
@@ -24,6 +29,10 @@ class Settings(BaseSettings):
         env_prefix="WORDLE_",
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
+        # Secrets land here as files named after the setting, e.g.
+        # /run/secrets/wordle_password. Preferred over environment variables:
+        # `docker inspect` shows the environment, not the file contents.
+        secrets_dir=str(_DOCKER_SECRETS) if _DOCKER_SECRETS.is_dir() else None,
         extra="ignore",
     )
 
@@ -46,6 +55,16 @@ class Settings(BaseSettings):
     # --- Game
     word_length: int = Field(default=WORD_LENGTH, ge=2)
     max_attempts: int = Field(default=MAX_ATTEMPTS, ge=1)
+    # --- Storage
+    store: Literal["memory", "sqlite"] = Field(
+        default="sqlite",
+        description="sqlite keeps games across a restart; memory loses them",
+    )
+    data_dir: Path = Field(
+        default=Path("data"),
+        description="Writable directory for the game database. Mount a volume here.",
+    )
+
     answers_path: Path | None = Field(default=None, description="Override the shipped answer list")
     dictionary_path: Path | None = Field(
         default=None, description="Override the shipped list of allowed guesses"

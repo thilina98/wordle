@@ -156,12 +156,19 @@ cp .env.example .env
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
-Edit `.env`:
+Secrets go in files, not in `.env`. `docker inspect` and `/proc/<pid>/environ`
+both show a container's environment; neither shows a mounted secret.
+
+```bash
+mkdir -p secrets
+printf '%s' 'the-password-you-will-share' > secrets/wordle_password
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
+chmod 600 secrets/wordle_*
+```
+
+Everything else goes in `.env`:
 
 ```ini
-WORDLE_PASSWORD=the-password-you-will-share
-WORDLE_SECRET_KEY=<paste the generated key>
-
 # Both of these are what the BROWSER sees. Fill them in after Step 6,
 # when you know your real URLs.
 WORDLE_ALLOWED_ORIGINS=http://[your-ipv6]:8080
@@ -199,6 +206,28 @@ docker compose logs -f          # Ctrl-C to stop watching
 curl -s localhost:8000/healthz  # API: expect {"status":"ok"}
 curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/   # web: expect 200
 ```
+
+### What the compose file gives you
+
+- **A named volume, `wordle-data`.** Games in progress live in SQLite there.
+  Destroy the container, rebuild the image, `docker compose down` — the volume
+  survives all of it. Only `docker volume rm wordle-data` removes it.
+- **Both containers run as non-root** with a read-only root filesystem, all
+  Linux capabilities dropped, and `no-new-privileges`. The only writable paths
+  are the volume and a small tmpfs.
+- **Secrets are mounted files**, not environment variables.
+
+Verify all of that after it starts:
+
+```bash
+docker exec wordle-api id                     # uid=10001, not root
+docker exec wordle-api touch /app/x           # must fail: read-only
+docker exec wordle-api touch /data/x          # must succeed: the volume
+docker exec wordle-api ls -l /run/secrets/    # the two secret files
+docker inspect wordle-api --format '{{json .Config.Env}}' | grep -c PASSWORD   # 0
+```
+
+### Why host networking
 
 The compose file uses `network_mode: host`. That is deliberate:
 
@@ -406,18 +435,43 @@ error means `WORDLE_ALLOWED_ORIGINS` does not match where the page came from.
 ```bash
 docker compose logs -f --tail=100     # watch logs
 docker compose restart                # restart
-docker compose down                   # stop
+docker compose down                   # stop, keeping the volume
 docker stats --no-stream              # what it is using
 
 # Update after pushing changes
 cd /opt/wordle && git pull && docker compose up -d --build
 
-# Change the password
-nano .env && docker compose up -d     # everyone is logged out
+# Change the password. Everyone is logged out.
+printf '%s' 'new-password' > secrets/wordle_password && docker compose up -d
 ```
 
-There is nothing to back up but `.env`. No database, no volumes, no state on
-disk.
+**Back up** `secrets/`, `.env`, and the volume:
+
+```bash
+docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
+  tar czf /backup/wordle-data.tar.gz -C /data .
+```
+
+**Restore:**
+
+```bash
+docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
+  tar xzf /backup/wordle-data.tar.gz -C /data
+```
+
+The volume holds games in progress. Losing it is not a disaster — players get a
+fresh board — but there is no reason to.
+
+### Developing against it
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml watch
+```
+
+`watch` syncs edits into the running containers, so a change to a `.py` or
+`.js` file takes effect without a rebuild, and a change to `pyproject.toml`
+triggers one. The override also publishes ports instead of using host
+networking, which is what makes this work on a Mac or Windows machine.
 
 ---
 
@@ -485,7 +539,7 @@ Type=exec
 User=wordle
 WorkingDirectory=/opt/wordle/backend
 EnvironmentFile=/opt/wordle/.env
-Environment=WORDLE_FRONTEND_DIR=/opt/wordle/frontend
+Environment=WORDLE_DATA_DIR=/var/lib/wordle
 ExecStart=/opt/wordle/backend/.venv/bin/uvicorn wordle.app:create_app \
   --factory --host :: --port 8000 --workers 1 \
   --proxy-headers --forwarded-allow-ips '*'
@@ -495,10 +549,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+StateDirectory=wordle
+ReadWritePaths=/var/lib/wordle
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Without Docker there are no mounted secrets, so put the password and key in
+`/opt/wordle/.env` and `chmod 600` it.
 
 ```bash
 sudo useradd --system --no-create-home wordle
