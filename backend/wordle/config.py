@@ -7,6 +7,7 @@ rather than falling back to something guessable.
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
@@ -16,10 +17,26 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .game import MAX_ATTEMPTS, WORD_LENGTH
 
-# Docker mounts secrets here before the process starts, so testing for it at
-# import time is safe. Outside a container the directory is absent and
-# pydantic-settings would warn about it on every construction.
-_DOCKER_SECRETS = Path("/run/secrets")
+# Where the password and signing key live, one file each. Secrets are never
+# written down twice, so the same directory serves Docker and a run from
+# source; only its location differs.
+_SECRET_LOCATIONS = (
+    Path("/run/secrets"),  # Docker mounts them here
+    Path("secrets"),  # running from the repo root
+    Path("../secrets"),  # running from backend/
+)
+
+
+def _secrets_dir() -> str | None:
+    """First of the known locations that exists, or WORDLE_SECRETS_DIR.
+
+    Resolved at import: the Docker mount is in place before the process
+    starts, and pydantic-settings warns on every construction if handed a
+    directory that is not there.
+    """
+    override = os.environ.get("WORDLE_SECRETS_DIR")
+    candidates = (Path(override),) if override else _SECRET_LOCATIONS
+    return next((str(c) for c in candidates if c.is_dir()), None)
 
 
 class Settings(BaseSettings):
@@ -29,10 +46,10 @@ class Settings(BaseSettings):
         env_prefix="WORDLE_",
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
-        # Secrets land here as files named after the setting, e.g.
-        # /run/secrets/wordle_password. Preferred over environment variables:
-        # `docker inspect` shows the environment, not the file contents.
-        secrets_dir=str(_DOCKER_SECRETS) if _DOCKER_SECRETS.is_dir() else None,
+        # One file per secret, named after the setting: wordle_password,
+        # wordle_secret_key. Kept out of .env and out of the environment --
+        # `docker inspect` prints the environment, not a file's contents.
+        secrets_dir=_secrets_dir(),
         extra="ignore",
     )
 

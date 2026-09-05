@@ -6,28 +6,41 @@ from pydantic import ValidationError
 from wordle.config import Settings
 
 
-def test_refuses_to_start_without_a_password(monkeypatch):
+@pytest.fixture
+def no_secrets(tmp_path):
+    """An empty secrets directory.
+
+    Passing None means "not provided" to pydantic-settings, which then falls
+    back to the configured directory -- and a test would quietly read the
+    developer's real secrets/ instead of failing.
+    """
+    empty = tmp_path / "no-secrets"
+    empty.mkdir()
+    return str(empty)
+
+
+def test_refuses_to_start_without_a_password(monkeypatch, no_secrets):
     monkeypatch.delenv("WORDLE_PASSWORD", raising=False)
     monkeypatch.setenv("WORDLE_SECRET_KEY", "x" * 32)
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+        Settings(_env_file=None, _secrets_dir=no_secrets)
 
 
-def test_refuses_to_start_without_a_secret_key(monkeypatch):
+def test_refuses_to_start_without_a_secret_key(monkeypatch, no_secrets):
     monkeypatch.setenv("WORDLE_PASSWORD", "hunter2")
     monkeypatch.delenv("WORDLE_SECRET_KEY", raising=False)
     with pytest.raises(ValidationError):
-        Settings(_env_file=None)
+        Settings(_env_file=None, _secrets_dir=no_secrets)
 
 
-def test_refuses_a_blank_password():
+def test_refuses_a_blank_password(no_secrets):
     with pytest.raises(ValidationError):
-        Settings(password="", secret_key="x" * 32, _env_file=None)
+        Settings(password="", secret_key="x" * 32, _env_file=None, _secrets_dir=no_secrets)
 
 
-def test_refuses_a_short_secret_key():
+def test_refuses_a_short_secret_key(no_secrets):
     with pytest.raises(ValidationError):
-        Settings(password="hunter2", secret_key="short", _env_file=None)
+        Settings(password="hunter2", secret_key="short", _env_file=None, _secrets_dir=no_secrets)
 
 
 def test_reads_values_from_the_environment(monkeypatch):

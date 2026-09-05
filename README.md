@@ -47,8 +47,12 @@ cd backend
 ../.venv/bin/poetry install --extras dev
 
 cd ..
-cp .env.example .env                  # then edit it
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"   # WORDLE_SECRET_KEY
+cp .env.example .env                  # non-secret config; defaults suit local
+
+mkdir -p secrets                      # the two secrets, one file each
+printf '%s' 'pick-a-password' > secrets/wordle_password
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
+chmod 600 secrets/wordle_*
 ```
 
 **Terminal 1 — the API:**
@@ -65,7 +69,7 @@ cd frontend
 python3 -m http.server 8080
 ```
 
-Open **http://localhost:8080** and enter the password from `.env`.
+Open **http://localhost:8080** and enter the password from `secrets/wordle_password`.
 
 The frontend needs no build step and no Node. Any static server will do;
 `http.server` is just the one that is already installed.
@@ -108,8 +112,9 @@ from `.env` at the repo root. See [.env.example](.env.example).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `WORDLE_PASSWORD` | — | Required. Shared password. |
-| `WORDLE_SECRET_KEY` | — | Required, 16+ chars. Signs the token. |
+| `WORDLE_PASSWORD` | — | Required. Shared password. **From `secrets/`.** |
+| `WORDLE_SECRET_KEY` | — | Required, 16+ chars. Signs the token. **From `secrets/`.** |
+| `WORDLE_SECRETS_DIR` | auto | Override where the two secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
 | `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
@@ -127,11 +132,15 @@ from `.env` at the repo root. See [.env.example](.env.example).
 The API refuses to start without a password and a secret key. There is no
 fallback for either, because a default secret is not a secret.
 
-**Secrets are files, not variables.** In Docker they come from `secrets/` and
-are mounted at `/run/secrets/`, because `docker inspect` and
-`/proc/<pid>/environ` both expose the environment and neither exposes a file.
-Running locally without Docker, `.env` is read instead. See
-[secrets/README.md](secrets/README.md).
+**Secrets live in `secrets/`, never in `.env`** — one file per secret, the
+same directory in every environment (`/run/secrets` in Docker, `secrets/` from
+source). Compose reads `.env`, so a secret placed there becomes a container
+environment variable and `docker inspect` prints it.
+
+`.env` holds the per-machine, non-secret settings: which URLs the browser uses,
+and the timeouts. It is gitignored, so your laptop's copy and the VPS copy
+differ. See [secrets/README.md](secrets/README.md) and
+[.env.example](.env.example).
 
 ## API
 
