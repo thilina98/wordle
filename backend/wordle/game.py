@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -77,19 +78,20 @@ class Attempt:
 class GameState:
     """A single game in progress. Mutated only through `guess`.
 
-    Guesses are not checked against a dictionary. Any word of the right length
-    is scored and costs an attempt, so a player is never told which strings the
-    game happens to know.
+    `vocabulary` is the set of words a guess may be, which is far larger than
+    the set of words the answer is drawn from. Answers are common words;
+    guesses only have to be real ones.
     """
 
     target: str
+    vocabulary: Collection[str]
     max_attempts: int = MAX_ATTEMPTS
     attempts: list[Attempt] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.target = self.target.lower()
-        if not self.target.isalpha():
-            raise ValueError(f"target {self.target!r} must be alphabetic")
+        if self.target not in self.vocabulary:
+            raise ValueError(f"target {self.target!r} is not a valid guess")
 
     @property
     def word_length(self) -> int:
@@ -120,10 +122,9 @@ class GameState:
     def guess(self, word: str) -> Attempt:
         """Score a guess and record it.
 
-        Only the shape of the guess is checked, never its membership of a word
-        list: anything alphabetic and the right length is played. Raises
-        GameOverError if the game has finished, InvalidGuessError if the guess
-        is the wrong shape. Neither consumes an attempt.
+        Raises GameOverError if the game has finished, InvalidGuessError if the
+        guess is the wrong shape or not a real word. Neither consumes an
+        attempt.
         """
         if self.is_over:
             raise GameOverError("This game has already finished")
@@ -133,6 +134,8 @@ class GameState:
             raise InvalidGuessError(f"Guess must be {self.word_length} letters")
         if not word.isalpha():
             raise InvalidGuessError("Guess must contain letters only")
+        if word not in self.vocabulary:
+            raise InvalidGuessError("Not a valid word")
 
         attempt = Attempt(guess=word, colours=evaluate_guess(self.target, word))
         self.attempts.append(attempt)

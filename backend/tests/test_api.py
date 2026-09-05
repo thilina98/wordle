@@ -188,7 +188,7 @@ class TestGuessing:
     def test_running_out_reveals_the_answer(self, settings):
         settings.max_attempts = 2
         client = authed(settings)
-        client.app.state.repository.random_word = lambda rng=None: "crane"
+        client.app.state.answers.random_word = lambda rng=None: "crane"
 
         board = new_game(client)
         guess(client, board["game_id"], "state")
@@ -203,20 +203,20 @@ class TestGuessing:
         states = guess(client, board["game_id"], "state").json()["letter_states"]
         assert states == {"s": "miss", "t": "miss", "a": "hit", "e": "hit"}
 
-    def test_plays_a_word_that_is_not_in_the_list(self, client, answer):
-        # No dictionary check: an unlisted word is scored and costs an attempt.
-        answer("crane")
-        board = new_game(client)
-        result = guess(client, board["game_id"], "zzzzz").json()
-        assert result["attempts"][0]["guess"] == "zzzzz"
-        assert result["attempts"][0]["colours"] == ["miss"] * 5
-        assert result["attempts_remaining"] == 4
+    def test_rejects_something_that_is_not_a_word(self, client):
+        response = guess(client, new_game(client)["game_id"], "zzzzz")
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Not a valid word"
 
-    def test_an_unlisted_word_scores_normally(self, client, answer):
+    def test_accepts_a_real_word_that_is_never_an_answer(self, client, answer):
+        # Guesses come from the dictionary, which is far larger than the
+        # answer list. Rejecting real words is the bug this guards.
         answer("crane")
         board = new_game(client)
         result = guess(client, board["game_id"], "recan").json()
+        assert result["attempts"][0]["guess"] == "recan"
         assert result["attempts"][0]["colours"] == ["present"] * 5
+        assert result["attempts_remaining"] == 4
 
     def test_rejects_the_wrong_length(self, client):
         response = guess(client, new_game(client)["game_id"], "cran")
@@ -228,7 +228,8 @@ class TestGuessing:
 
     def test_a_rejected_guess_costs_nothing(self, client):
         game_id = new_game(client)["game_id"]
-        guess(client, game_id, "cran")
+        for bad in ("cran", "cr4ne", "zzzzz"):
+            guess(client, game_id, bad)
         assert client.get(f"/api/games/{game_id}").json()["attempts_remaining"] == 5
 
     def test_rejects_an_oversized_payload(self, client):

@@ -1,7 +1,16 @@
 """Word list access.
 
-The CSV is the only storage today. Everything else depends on this class rather
-than on a file, so swapping in a database later is a change confined here.
+Two lists, because they do different jobs:
+
+- **answers** — a small, curated set of common words. Targets come from here,
+  so nobody has to guess an obscure one.
+- **dictionary** — every word a guess is allowed to be. Much larger, so a
+  player typing a real word is not told it is wrong.
+
+The answers are a subset of the dictionary; `WordRepository.default_pair`
+checks that on load. The CSV is the only storage today. Everything else depends
+on this class rather than on a file, so swapping in a database later is a
+change confined here.
 """
 
 from __future__ import annotations
@@ -59,10 +68,27 @@ class WordRepository:
         return tuple(sorted(words))
 
     @classmethod
-    def default(cls, word_length: int = WORD_LENGTH) -> WordRepository:
-        """The list shipped inside the package."""
-        with resources.as_file(resources.files("wordle.data") / "words.csv") as path:
+    def packaged(cls, filename: str, word_length: int = WORD_LENGTH) -> WordRepository:
+        """A list shipped inside the package."""
+        with resources.as_file(resources.files("wordle.data") / filename) as path:
             return cls(path, word_length=word_length)
+
+    @classmethod
+    def default_pair(cls, word_length: int = WORD_LENGTH) -> tuple[WordRepository, WordRepository]:
+        """The shipped (answers, dictionary) pair.
+
+        An answer that is not an allowed guess would be unwinnable, so that is
+        checked here rather than discovered by a player.
+        """
+        answers = cls.packaged("answers.csv", word_length=word_length)
+        dictionary = cls.packaged("dictionary.csv", word_length=word_length)
+        stray = answers.vocabulary - dictionary.vocabulary
+        if stray:
+            raise WordListError(
+                f"{len(stray)} answer(s) missing from the dictionary: "
+                f"{', '.join(sorted(stray)[:5])}"
+            )
+        return answers, dictionary
 
     @property
     def vocabulary(self) -> frozenset[str]:

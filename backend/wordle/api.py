@@ -29,8 +29,12 @@ def _store(request: Request) -> GameStore:
     return request.app.state.store
 
 
-def _repository(request: Request) -> WordRepository:
-    return request.app.state.repository
+def _answers(request: Request) -> WordRepository:
+    return request.app.state.answers
+
+
+def _dictionary(request: Request) -> WordRepository:
+    return request.app.state.dictionary
 
 
 def _client_id(request: Request) -> str:
@@ -105,7 +109,8 @@ def check_session() -> dict[str, bool]:
 def create_game(request: Request) -> GameView:
     """Start a game with a random answer."""
     game = GameState(
-        target=_repository(request).random_word(),
+        target=_answers(request).random_word(),
+        vocabulary=_dictionary(request).vocabulary,
         max_attempts=_settings(request).max_attempts,
     )
     return GameView.of(_store(request).create(game), game)

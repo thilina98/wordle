@@ -31,12 +31,14 @@ tested implementation of the rules, not two.
         config.py     Settings from environment (pydantic-settings)
         game.py       Pure rules: evaluate_guess, GameState
         words.py      WordRepository over CSV. Swappable for a DB later.
+                      Two lists: answers (curated) and dictionary (all valid
+                      guesses).
         store.py      GameStore protocol + in-memory impl with TTL eviction.
         security.py   Password check, login throttle, signed access tokens.
         schemas.py    Request/response models.
         api.py        Every route. /api/login plus the game routes.
         app.py        App factory, CORS. Serves no files.
-        data/words.csv
+        data/answers.csv, data/dictionary.csv
       tests/          test_game, test_words, test_store, test_security,
                       test_config, test_api
     frontend/
@@ -83,7 +85,6 @@ Each step is one commit, tests written before the code.
 1. Teardown, plan, gitignore.
 2. Poetry project, modern pins, Python 3.13 venv.
 3. `game.py` — colour evaluation incl. duplicate letters, attempt tracking.
-   Guesses are checked for shape only, never against a dictionary.
 4. `words.py` — CSV loading, validation, random selection.
 5. `store.py` — game persistence with TTL eviction.
 6. `security.py` — password verification, throttling.
@@ -93,7 +94,13 @@ Each step is one commit, tests written before the code.
 10. Split the two halves apart: backend to JSON only, token auth and CORS,
     frontend onto its own web server with its own Dockerfile.
 
+## Word lists
+
+Answers come from a small curated list so nobody has to guess an obscure word.
+Guesses are checked against a much larger dictionary so real words are never
+refused. One list cannot do both jobs.
+
 ## Deferred
 
-Word list stays CSV; the `WordRepository` seam is where a DB goes. Game store is
+Word lists stay CSV; the `WordRepository` seam is where a DB goes. Game store is
 in-memory; the `GameStore` protocol is where Redis goes.

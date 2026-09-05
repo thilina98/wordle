@@ -3,9 +3,11 @@
 from wordle.game import GameState
 from wordle.store import InMemoryGameStore
 
+VOCABULARY = frozenset({"crane", "state", "tasty"})
+
 
 def a_game(target="crane"):
-    return GameState(target=target)
+    return GameState(target=target, vocabulary=VOCABULARY)
 
 
 class FakeClock:

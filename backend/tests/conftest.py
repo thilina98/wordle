@@ -11,22 +11,34 @@ from wordle.config import Settings
 PASSWORD = "open-sesame"
 SECRET_KEY = "test-secret-key-at-least-16"
 ORIGIN = "http://localhost:8080"
-WORDS = ["crane", "state", "tasty", "abbey", "geese"]
+ANSWERS = ["crane", "state", "tasty", "abbey", "geese"]
+# Valid guesses that are deliberately not answers, so tests can tell the two
+# lists apart.
+EXTRA_GUESSES = ["recan", "cards", "boxes", "zoned"]
 
 
-@pytest.fixture
-def word_list(tmp_path) -> Path:
-    path = tmp_path / "words.csv"
-    path.write_text("word\n" + "\n".join(WORDS) + "\n", encoding="utf-8")
+def _write(path: Path, words: list[str]) -> Path:
+    path.write_text("word\n" + "\n".join(words) + "\n", encoding="utf-8")
     return path
 
 
 @pytest.fixture
-def settings(word_list) -> Settings:
+def answers_path(tmp_path) -> Path:
+    return _write(tmp_path / "answers.csv", ANSWERS)
+
+
+@pytest.fixture
+def dictionary_path(tmp_path) -> Path:
+    return _write(tmp_path / "dictionary.csv", ANSWERS + EXTRA_GUESSES)
+
+
+@pytest.fixture
+def settings(answers_path, dictionary_path) -> Settings:
     return Settings(
         password=PASSWORD,
         secret_key=SECRET_KEY,
-        word_list_path=word_list,
+        answers_path=answers_path,
+        dictionary_path=dictionary_path,
         allowed_origins=[ORIGIN],
         max_attempts=5,
     )
@@ -69,7 +81,7 @@ def answer(app):
     """Pin the answer so game outcomes are deterministic."""
 
     def pin(word: str) -> str:
-        app.state.repository.random_word = lambda rng=None: word
+        app.state.answers.random_word = lambda rng=None: word
         return word
 
     return pin

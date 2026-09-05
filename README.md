@@ -115,7 +115,8 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
 | `WORDLE_MAX_ATTEMPTS` | `5` | Guesses per game. |
 | `WORDLE_WORD_LENGTH` | `5` | Must match the word list. |
-| `WORDLE_WORD_LIST_PATH` | shipped CSV | Override the word list. |
+| `WORDLE_ANSWERS_PATH` | shipped CSV | Override the answer list. |
+| `WORDLE_DICTIONARY_PATH` | shipped CSV | Override the allowed-guess list. |
 | `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
 | `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
 | `WORDLE_LOGIN_MAX_FAILURES` | `10` | Failures before a lockout. |
@@ -161,13 +162,9 @@ A board looks like this. `answer` stays `null` until the game ends:
 }
 ```
 
-**Guesses are not checked against a dictionary.** Any five letters are scored
-and cost an attempt, including strings that are not words. The word list picks
-the answer; it does not police guesses, so the game never tells a player which
-strings it happens to know.
-
-`400` is only for the wrong shape — `"Guess must be 5 letters"` or `"Guess must
-contain letters only"` — and costs no attempt. `409` means the game is over,
+Guess errors are specific, so the page can say something useful: `400` with
+`"Not a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
+letters only"`. A rejected guess costs no attempt. `409` means the game is over,
 `404` that it expired or never existed, `401` that the token is missing, forged
 or stale.
 
@@ -190,13 +187,27 @@ Because the frontend is served separately, its HTML and JS are public. They
 contain no answers and no password, and every route that matters is gated. What
 the password protects is playing, not downloading an empty board.
 
-## Word list
+## Word lists
 
-`backend/wordle/data/words.csv`, one word per row under a `word` header. Every
-row must be a five-letter alphabetic word; a bad row stops startup with the
-offending line number rather than being quietly skipped.
+Two files in `backend/wordle/data/`, because they do different jobs.
 
-The list supplies answers only. Guesses are never checked against it.
+| File | Size | Job |
+|---|---|---|
+| `answers.csv` | 830 | Where the answer comes from. Common words only. |
+| `dictionary.csv` | 14,855 | What a guess is allowed to be. |
+
+One word per row under a `word` header. Every row must be a five-letter
+alphabetic word; a bad row stops startup with the offending line number rather
+than being quietly skipped.
+
+**Why two.** Using one list for both jobs breaks whichever way you size it. A
+small list rejects `cards`, `boxes` and `trees` as "not a word", which is
+maddening. A large list hands out answers like `aalii` and `zymic`. So answers
+are drawn from a curated set, and guesses are checked against a full one.
+
+The answers must all be valid guesses, or a game would be unwinnable.
+`WordRepository.default_pair()` checks that at startup rather than leaving a
+player to discover it.
 
 Swapping in a database means reimplementing `WordRepository` and nothing else.
 

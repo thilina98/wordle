@@ -46,7 +46,10 @@ class Settings(BaseSettings):
     # --- Game
     word_length: int = Field(default=WORD_LENGTH, ge=2)
     max_attempts: int = Field(default=MAX_ATTEMPTS, ge=1)
-    word_list_path: Path | None = Field(default=None, description="Override the shipped CSV")
+    answers_path: Path | None = Field(default=None, description="Override the shipped answer list")
+    dictionary_path: Path | None = Field(
+        default=None, description="Override the shipped list of allowed guesses"
+    )
 
     # --- Limits
     game_ttl_seconds: int = Field(default=60 * 60 * 4, ge=60)

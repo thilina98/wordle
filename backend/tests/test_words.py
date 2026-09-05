@@ -76,10 +76,55 @@ class TestSelection:
         assert "state" not in repo
 
 
-class TestShippedList:
-    """The list that actually ships must be usable."""
+class TestShippedLists:
+    """The lists that actually ship must be usable, and consistent with each other."""
 
-    def test_default_list_loads_and_is_large_enough(self):
-        repo = WordRepository.default()
-        assert len(repo) >= 200
-        assert all(len(w) == 5 and w.isalpha() and w.islower() for w in repo.vocabulary)
+    def test_both_lists_load(self):
+        answers, dictionary = WordRepository.default_pair()
+        for repo in (answers, dictionary):
+            assert all(len(w) == 5 and w.isalpha() and w.islower() for w in repo.vocabulary)
+
+    def test_answer_list_is_a_sensible_size(self):
+        answers, _ = WordRepository.default_pair()
+        assert len(answers) >= 200
+
+    def test_dictionary_is_much_larger_than_the_answer_list(self):
+        # A dictionary the size of the answer list would reject real words,
+        # which is the whole reason the two are separate.
+        answers, dictionary = WordRepository.default_pair()
+        assert len(dictionary) > 10 * len(answers)
+
+    def test_every_answer_is_an_allowed_guess(self):
+        answers, dictionary = WordRepository.default_pair()
+        assert answers.vocabulary <= dictionary.vocabulary
+
+    def test_dictionary_holds_ordinary_words_the_answer_list_does_not(self):
+        answers, dictionary = WordRepository.default_pair()
+        for word in ("cards", "boxes", "trees", "email", "fjord"):
+            assert word in dictionary, word
+
+    def test_dictionary_rejects_letter_soup(self):
+        _, dictionary = WordRepository.default_pair()
+        for junk in ("zzzzz", "qwrtp", "aeiou"):
+            assert junk not in dictionary, junk
+
+    def test_mismatched_pair_is_reported(self, tmp_path, monkeypatch):
+        # An answer outside the dictionary would be an unwinnable game.
+        answers = tmp_path / "answers.csv"
+        answers.write_text("word\ncrane\nzoned\n", encoding="utf-8")
+        dictionary = tmp_path / "dictionary.csv"
+        dictionary.write_text("word\ncrane\n", encoding="utf-8")
+
+        real = WordRepository.packaged
+        monkeypatch.setattr(
+            WordRepository,
+            "packaged",
+            classmethod(
+                lambda cls, filename, word_length=5: cls(
+                    answers if "answers" in filename else dictionary, word_length=word_length
+                )
+            ),
+        )
+        with pytest.raises(WordListError, match="zoned"):
+            WordRepository.default_pair()
+        monkeypatch.setattr(WordRepository, "packaged", real)

@@ -17,14 +17,24 @@ from .store import InMemoryGameStore
 from .words import WordRepository
 
 
+def _word_lists(settings: Settings) -> tuple[WordRepository, WordRepository]:
+    """Answers and allowed guesses, either overridden or the shipped pair."""
+    if settings.answers_path or settings.dictionary_path:
+        # Overriding one and not the other is almost always a mistake, so a
+        # missing path falls back to the same file rather than the shipped one.
+        answers_path = settings.answers_path or settings.dictionary_path
+        dictionary_path = settings.dictionary_path or settings.answers_path
+        return (
+            WordRepository(answers_path, word_length=settings.word_length),
+            WordRepository(dictionary_path, word_length=settings.word_length),
+        )
+    return WordRepository.default_pair(word_length=settings.word_length)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
-    repository = (
-        WordRepository(settings.word_list_path, word_length=settings.word_length)
-        if settings.word_list_path
-        else WordRepository.default(word_length=settings.word_length)
-    )
+    answers, dictionary = _word_lists(settings)
 
     app = FastAPI(
         title="Wordle API",
@@ -35,7 +45,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=None,
     )
     app.state.settings = settings
-    app.state.repository = repository
+    app.state.answers = answers
+    app.state.dictionary = dictionary
     app.state.store = InMemoryGameStore(
         ttl_seconds=settings.game_ttl_seconds, max_games=settings.max_games
     )
