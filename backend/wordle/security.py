@@ -1,7 +1,8 @@
-"""Site access: one shared password, no user accounts.
+"""API access: one shared password, no user accounts.
 
-The password is checked server side only and never reaches the browser. A
-signed session cookie carries the result.
+The frontend is a separate origin, so access is carried by a signed bearer
+token rather than a cookie. A token proves only "someone knew the password";
+it holds no identity because there is none.
 """
 
 from __future__ import annotations
@@ -11,10 +12,13 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-SESSION_KEY = "authenticated"
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 
 DEFAULT_MAX_FAILURES = 10
 DEFAULT_LOCKOUT_SECONDS = 300
+
+_TOKEN_SALT = "wordle-access"
+_TOKEN_SUBJECT = "granted"
 
 
 def verify_password(candidate: str, expected: str) -> bool:
@@ -75,3 +79,39 @@ class LoginThrottle:
                 del self._records[client]
             return 0.0
         return remaining
+
+
+class TokenError(Exception):
+    """The token is missing, tampered with, or past its lifetime."""
+
+
+def issue_token(secret_key: str) -> str:
+    """Mint a signed token. Its age is stamped in, and checked on read."""
+    return URLSafeTimedSerializer(secret_key, salt=_TOKEN_SALT).dumps(_TOKEN_SUBJECT)
+
+
+def verify_token(token: str, secret_key: str, max_age: int) -> None:
+    """Raise TokenError unless the token is ours and still fresh."""
+    serializer = URLSafeTimedSerializer(secret_key, salt=_TOKEN_SALT)
+    try:
+        subject = serializer.loads(token, max_age=max_age)
+    except SignatureExpired as exc:
+        raise TokenError("Token expired") from exc
+    except BadSignature as exc:
+        raise TokenError("Invalid token") from exc
+    if subject != _TOKEN_SUBJECT:
+        raise TokenError("Invalid token")
+
+
+def bearer_token(header: str | None) -> str:
+    """Pull the token out of an Authorization header.
+
+    Raises TokenError rather than returning empty, so a malformed header and a
+    missing one fail the same way.
+    """
+    if not header:
+        raise TokenError("Missing credentials")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise TokenError("Missing credentials")
+    return token.strip()

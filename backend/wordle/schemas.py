@@ -7,6 +7,15 @@ from pydantic import BaseModel, Field
 from .game import Colour, GameState
 
 
+class LoginRequest(BaseModel):
+    password: str = Field(max_length=256)
+
+
+class TokenResponse(BaseModel):
+    token: str
+    expires_in: int
+
+
 class GuessRequest(BaseModel):
     # Length and character rules live in the domain, so the error text is
     # identical wherever a guess arrives from. The cap here just bounds input.

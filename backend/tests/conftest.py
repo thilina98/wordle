@@ -10,9 +10,8 @@ from wordle.config import Settings
 
 PASSWORD = "open-sesame"
 SECRET_KEY = "test-secret-key-at-least-16"
+ORIGIN = "http://localhost:8080"
 WORDS = ["crane", "state", "tasty", "abbey", "geese"]
-
-FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 
 
 @pytest.fixture
@@ -28,7 +27,7 @@ def settings(word_list) -> Settings:
         password=PASSWORD,
         secret_key=SECRET_KEY,
         word_list_path=word_list,
-        frontend_dir=FRONTEND_DIR,
+        allowed_origins=[ORIGIN],
         max_attempts=5,
     )
 
@@ -39,24 +38,29 @@ def app(settings):
 
 
 @pytest.fixture
-def anon(app):
-    """Client with no session."""
+def anon(app) -> TestClient:
+    """Client with no token."""
     return TestClient(app)
 
 
+def obtain_token(client: TestClient, password: str = PASSWORD) -> str:
+    response = client.post("/api/login", json={"password": password})
+    assert response.status_code == 200, response.text
+    return response.json()["token"]
+
+
 @pytest.fixture
-def client(app):
-    """Client that has logged in."""
+def client(app) -> TestClient:
+    """Client carrying a valid token on every request."""
     client = TestClient(app)
-    response = client.post("/login", data={"password": PASSWORD})
-    assert response.status_code == 200  # followed the redirect to /
+    client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
     return client
 
 
-def login(settings: Settings) -> TestClient:
+def authed(settings: Settings) -> TestClient:
     """A logged-in client for a one-off settings variation."""
     client = TestClient(create_app(settings))
-    assert client.post("/login", data={"password": PASSWORD}).status_code == 200
+    client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
     return client
 
 

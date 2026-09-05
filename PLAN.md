@@ -1,60 +1,80 @@
 # Wordle — Implementation Plan
 
 Five-letter word game, five attempts, colour-coded feedback. Mobile-first,
-physical + on-screen keyboard. Whole site behind a shared password.
+physical + on-screen keyboard. Protected by a shared password.
 
 ## Architecture
 
-Backend owns every game rule. The frontend is a view layer: it renders what the
-API returns and never decides a colour. This is deliberate — it keeps the answer
-off the client and means one tested implementation of the rules, not two.
+One repository, two applications, built and run separately. They share nothing
+but the HTTP contract.
 
 ```
-browser ──HTTP──> FastAPI
-                    ├── page routes  (/, /login)   session-gated HTML
-                    ├── /static/*                  session-gated assets
-                    └── /api/*                     session-gated JSON
-                          └── domain: game logic, word repository, game store
+browser ──▶ frontend (static files + web server, port 8080)
+        │       index.html  style.css  app.js  api.js  config.js
+        │
+        └──▶ backend (FastAPI, port 8000)   JSON only, no HTML
+                 api.py    routes, token gate, CORS
+                 game.py   the rules. no I/O, no framework
+                 words.py  WordRepository over CSV
+                 store.py  GameStore protocol + in-memory impl
 ```
+
+The backend owns every game rule. The frontend renders what the API returns and
+never decides a colour. That keeps the answer off the client and means one
+tested implementation of the rules, not two.
 
 ### Layout
 
     backend/
+      Dockerfile
       wordle/
         config.py     Settings from environment (pydantic-settings)
-        game.py       Pure rules: evaluate_guess, GameState. No I/O, no framework.
+        game.py       Pure rules: evaluate_guess, GameState
         words.py      WordRepository over CSV. Swappable for a DB later.
         store.py      GameStore protocol + in-memory impl with TTL eviction.
-        security.py   Password check, login throttle, auth dependency.
+        security.py   Password check, login throttle, signed access tokens.
         schemas.py    Request/response models.
-        api.py        /api router.
-        app.py        App factory, page routes, static mount.
+        api.py        Every route. /api/login plus the game routes.
+        app.py        App factory, CORS. Serves no files.
         data/words.csv
-      tests/          test_game, test_words, test_store, test_security, test_api
+      tests/          test_game, test_words, test_store, test_security,
+                      test_config, test_api
     frontend/
-      login.html  index.html  app.js  style.css
+      Dockerfile      nginx, no build step
+      nginx.conf
+      index.html      password gate + game, one page
+      api.js          the only file that knows the backend exists
+      app.js          view layer
+      style.css
+      config.js       API base URL, rewritten at container start
 
 ## Access control
 
-A shared password, no users. `POST /login` compares against
-`WORDLE_PASSWORD` with `hmac.compare_digest` and sets a signed session cookie
-(`itsdangerous`, via Starlette's `SessionMiddleware`). Everything else — the game
-page, the CSS, the JS, every API route — requires that cookie. Unauthenticated
-page requests redirect to `/login`; unauthenticated API requests get 401.
+A shared password, no users. `POST /api/login` compares against
+`WORDLE_PASSWORD` with `hmac.compare_digest` and returns a token signed with
+`WORDLE_SECRET_KEY` and stamped with the time. Every game route requires it in
+an `Authorization: Bearer` header.
 
-The password never reaches client-side JavaScript. Failed logins are throttled
-per client IP.
+A token rather than a cookie, because the two halves are separate origins.
+A cross-origin cookie needs `SameSite=None; Secure`, which needs HTTPS, which
+does not fit a bare-IP deployment over plain HTTP.
+
+The frontend's files are public, since a separate static server hands them out.
+They hold no password and no answers. The password gates playing, not
+downloading an empty board.
+
+Failed logins are throttled per client IP.
 
 ## Testing
 
 TDD: tests first, then the implementation, per step below. Tests assert
 input/output contracts — `evaluate_guess("crane", "caner")` returns a specific
-colour list; `POST /api/guess` returns a specific shape — so they survive
+colour list; `POST /api/games` returns a specific shape — so they survive
 refactoring of the internals.
 
 No Node runtime is available on this machine, so there is no JS test suite.
-Shipping one that cannot run would be worse than not having it. The mitigation is
-architectural: the frontend holds no game rules to test.
+Shipping one that cannot run would be worse than not having it. The mitigation
+is architectural: the frontend holds no game rules to test.
 
 ## Steps
 
@@ -65,10 +85,12 @@ Each step is one commit, tests written before the code.
 3. `game.py` — colour evaluation incl. duplicate letters, attempt tracking.
 4. `words.py` — CSV loading, validation, random selection.
 5. `store.py` — game persistence with TTL eviction.
-6. `security.py` — password verification, throttling, auth dependency.
-7. `api.py` + `app.py` — endpoints, session gate, static serving.
+6. `security.py` — password verification, throttling.
+7. `api.py` + `app.py` — endpoints, session gate.
 8. Frontend — grid, keyboards, colour reveal, mobile layout.
-9. README, `.env.example`, final review pass.
+9. README, `.env.example`, deployment guide.
+10. Split the two halves apart: backend to JSON only, token auth and CORS,
+    frontend onto its own web server with its own Dockerfile.
 
 ## Deferred
 

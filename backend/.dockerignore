@@ -1,0 +1,9 @@
+.venv
+dist
+tests
+poetry.toml
+__pycache__
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.env

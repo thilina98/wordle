@@ -1,10 +1,9 @@
 /**
  * Wordle — view layer.
  *
- * Holds no game rules. The server decides what is a valid word and what colour
- * each letter gets; this file draws whatever board the API returns and collects
- * key presses. The answer is not in this file, or in any response, until the
- * game is over.
+ * Holds no game rules and no knowledge of HTTP. The server decides which words
+ * are valid and what colour each letter gets; WordleApi does the talking. This
+ * file draws the board and collects key presses.
  */
 
 'use strict';
@@ -19,6 +18,12 @@ const KEY_ROWS = [
 ];
 
 const el = {
+  gate: document.getElementById('gate'),
+  loginForm: document.getElementById('login-form'),
+  password: document.getElementById('password'),
+  loginError: document.getElementById('login-error'),
+  game: document.getElementById('game'),
+  signout: document.getElementById('signout'),
   board: document.getElementById('board'),
   keyboard: document.getElementById('keyboard'),
   toast: document.getElementById('toast'),
@@ -48,36 +53,28 @@ function lockInput(ms) {
   }, ms);
 }
 
-// --- API ------------------------------------------------------------------
+// --- Screens --------------------------------------------------------------
 
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
-  });
-
-  if (response.status === 401) {
-    // Session gone or expired: back to the password page.
-    window.location.assign('/login');
-    throw new Error('unauthenticated');
-  }
-
-  const body = response.status === 204 ? null : await response.json().catch(() => null);
-  if (!response.ok) {
-    const error = new Error((body && body.detail) || `Request failed (${response.status})`);
-    error.status = response.status;
-    throw error;
-  }
-  return body;
+function showGate(message = '') {
+  el.game.hidden = true;
+  el.gate.hidden = false;
+  el.loginError.textContent = message;
+  el.loginError.hidden = !message;
+  el.password.value = '';
+  el.password.focus();
 }
 
-const createGame = () => api('/api/games', { method: 'POST' });
-const readGame = (id) => api(`/api/games/${encodeURIComponent(id)}`);
-const sendGuess = (id, guess) =>
-  api(`/api/games/${encodeURIComponent(id)}/guesses`, {
-    method: 'POST',
-    body: JSON.stringify({ guess }),
-  });
+function showGame() {
+  el.gate.hidden = true;
+  el.game.hidden = false;
+}
+
+/** Called whenever the API says our token is no longer good. */
+function sessionLost() {
+  WordleApi.logout();
+  view = null;
+  showGate('Session expired. Enter the password again.');
+}
 
 // --- Rendering ------------------------------------------------------------
 
@@ -202,7 +199,6 @@ function rejectRow() {
 
 /** Wait out the reveal before covering the board with the result. */
 function showResult() {
-  const delay = revealDuration();
   window.setTimeout(() => {
     if (view.is_won) {
       el.resultTitle.textContent = 'Solved';
@@ -215,7 +211,7 @@ function showResult() {
     }
     el.result.hidden = false;
     el.again.focus();
-  }, delay);
+  }, revealDuration());
 }
 
 // --- Input ----------------------------------------------------------------
@@ -244,8 +240,7 @@ async function submit() {
 
   busy = true;
   try {
-    const guessed = draft;
-    view = await sendGuess(view.game_id, guessed);
+    view = await WordleApi.submitGuess(view.game_id, draft);
     draft = '';
     paint(view.attempts.length - 1);
     lockInput(revealDuration());
@@ -254,13 +249,15 @@ async function submit() {
   } catch (error) {
     // On success lockInput owns `busy`; on failure release it right away.
     busy = false;
-    if (error.status === 400) {
+    if (error.status === 401) {
+      sessionLost();
+    } else if (error.status === 400) {
       toast(error.message, 'error');   // e.g. "Not in word list"
       rejectRow();
     } else if (error.status === 404) {
       toast('That game expired. Starting a new one.', 'error');
       await start(true);
-    } else if (error.message !== 'unauthenticated') {
+    } else {
       toast(error.message, 'error');
     }
   }
@@ -270,14 +267,24 @@ async function submit() {
 
 /** Resume the stored game when possible, otherwise deal a new one. */
 async function start(force = false) {
-  const saved = force ? null : window.localStorage.getItem(STORAGE_KEY);
+  let saved = null;
+  if (!force) {
+    try {
+      saved = window.localStorage.getItem(STORAGE_KEY);
+    } catch {
+      // No storage, no resume. Not fatal.
+    }
+  }
 
   view = null;
   if (saved) {
-    view = await readGame(saved).catch(() => null);
+    view = await WordleApi.readGame(saved).catch((error) => {
+      if (error.status === 401) throw error;
+      return null;   // expired or unknown: just deal a new one
+    });
   }
   if (!view) {
-    view = await createGame();
+    view = await WordleApi.createGame();
   }
 
   draft = '';
@@ -295,8 +302,51 @@ async function start(force = false) {
   if (view.is_over) showResult();
 }
 
+/** Enter the game, handling a token that turned out to be stale. */
+async function enterGame() {
+  showGame();
+  try {
+    await start();
+  } catch (error) {
+    if (error.status === 401) sessionLost();
+    else toast(error.message, 'error');
+  }
+}
+
+el.loginForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = el.loginForm.querySelector('button');
+  button.disabled = true;
+  try {
+    await WordleApi.login(el.password.value);
+    el.loginError.hidden = true;
+    await enterGame();
+  } catch (error) {
+    el.loginError.textContent =
+      error.status === 401 ? 'Wrong password.' : error.message;
+    el.loginError.hidden = false;
+    el.password.select();
+  } finally {
+    button.disabled = false;
+  }
+});
+
+el.signout.addEventListener('click', () => {
+  WordleApi.logout();
+  view = null;
+  showGate();
+});
+
+el.again.addEventListener('click', () => {
+  start(true).catch((error) => {
+    if (error.status === 401) sessionLost();
+    else toast(error.message, 'error');
+  });
+});
+
 document.addEventListener('keydown', (event) => {
   if (event.ctrlKey || event.metaKey || event.altKey) return;
+  if (el.game.hidden) return;   // the gate owns the keyboard while it is up
   const key = event.key;
 
   // A focused button owns its own Enter and Space: "Play again", "Sign out".
@@ -308,9 +358,9 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-el.again.addEventListener('click', () => {
-  start(true).catch((error) => toast(error.message, 'error'));
-});
-
 buildKeyboard();
-start().catch((error) => toast(error.message, 'error'));
+
+// Skip the password screen if the stored token is still good.
+WordleApi.sessionIsValid()
+  .then((valid) => (valid ? enterGame() : showGate()))
+  .catch(() => showGate('Cannot reach the server.'));

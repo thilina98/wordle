@@ -1,6 +1,12 @@
 """End-to-end tests over the HTTP surface: the gate, then the game."""
 
-from tests.conftest import PASSWORD, login
+import time
+
+from fastapi.testclient import TestClient
+
+from tests.conftest import ORIGIN, PASSWORD, authed, obtain_token
+from wordle.app import create_app
+from wordle.security import issue_token
 
 
 def new_game(client) -> dict:
@@ -13,86 +19,126 @@ def guess(client, game_id: str, word: str):
     return client.post(f"/api/games/{game_id}/guesses", json={"guess": word})
 
 
-class TestAccessControl:
+class TestServesJsonOnly:
+    """The frontend is a separate application. This one hands out no pages."""
+
+    def test_serves_no_html_pages(self, anon):
+        for path in ("/", "/login", "/index.html"):
+            assert anon.get(path).status_code == 404
+
+    def test_serves_no_static_assets(self, anon):
+        for path in ("/static/app.js", "/static/style.css", "/app.js"):
+            assert anon.get(path).status_code == 404
+
     def test_health_check_is_public(self, anon):
         assert anon.get("/healthz").json() == {"status": "ok"}
-
-    def test_root_redirects_anonymous_visitors_to_login(self, anon):
-        response = anon.get("/", follow_redirects=False)
-        assert response.status_code == 303
-        assert response.headers["location"] == "/login"
-
-    def test_login_page_is_public(self, anon):
-        response = anon.get("/login")
-        assert response.status_code == 200
-        assert "password" in response.text.lower()
-
-    def test_api_rejects_anonymous_requests(self, anon):
-        assert anon.post("/api/games").status_code == 401
-        assert anon.get("/api/games/whatever").status_code == 401
-
-    def test_static_assets_need_a_session(self, anon):
-        # The whole site is private, scripts and styles included.
-        assert anon.get("/static/app.js").status_code == 401
-        assert anon.get("/static/style.css").status_code == 401
-
-    def test_wrong_password_is_rejected(self, anon):
-        response = anon.post("/login", data={"password": "guess"}, follow_redirects=False)
-        assert response.status_code == 401
-        assert "wrong password" in response.text.lower()
-
-    def test_empty_password_is_rejected(self, anon):
-        assert anon.post("/login", data={"password": ""}).status_code == 401
-
-    def test_correct_password_starts_a_session(self, anon):
-        response = anon.post("/login", data={"password": PASSWORD}, follow_redirects=False)
-        assert response.status_code == 303
-        assert response.headers["location"] == "/"
-        assert "session" in response.cookies
-
-    def test_session_unlocks_the_page_and_its_assets(self, client):
-        assert client.get("/").status_code == 200
-        assert client.get("/static/app.js").status_code == 200
-        assert client.get("/static/style.css").status_code == 200
-
-    def test_login_page_redirects_an_authenticated_visitor(self, client):
-        response = client.get("/login", follow_redirects=False)
-        assert response.status_code == 303
-        assert response.headers["location"] == "/"
-
-    def test_logout_ends_the_session(self, client):
-        client.post("/logout")
-        assert client.get("/", follow_redirects=False).status_code == 303
-        assert client.post("/api/games").status_code == 401
-
-    def test_password_never_appears_in_served_files(self, client):
-        for path in ("/", "/static/app.js", "/static/style.css"):
-            assert PASSWORD not in client.get(path).text
-
-    def test_static_route_refuses_path_traversal(self, client):
-        for attempt in ("../backend/pyproject.toml", "....//pyproject.toml"):
-            assert client.get(f"/static/{attempt}").status_code == 404
 
     def test_api_docs_are_not_exposed(self, anon):
         for path in ("/docs", "/redoc", "/openapi.json"):
             assert anon.get(path).status_code == 404
 
+
+class TestLogin:
+    def test_correct_password_returns_a_token(self, anon):
+        response = anon.post("/api/login", json={"password": PASSWORD})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["token"]
+        assert body["expires_in"] > 0
+
+    def test_wrong_password_is_rejected(self, anon):
+        response = anon.post("/api/login", json={"password": "guess"})
+        assert response.status_code == 401
+        assert response.json()["detail"] == "Wrong password"
+
+    def test_empty_password_is_rejected(self, anon):
+        assert anon.post("/api/login", json={"password": ""}).status_code == 401
+
+    def test_login_needs_a_password_field(self, anon):
+        assert anon.post("/api/login", json={}).status_code == 422
+
+    def test_never_echoes_the_password_back(self, anon):
+        assert PASSWORD not in anon.post("/api/login", json={"password": PASSWORD}).text
+
     def test_repeated_failures_are_throttled(self, settings):
         settings.login_max_failures = 3
-        client = login(settings)
+        client = TestClient(create_app(settings))
         for _ in range(3):
-            client.post("/login", data={"password": "wrong"})
-        response = client.post("/login", data={"password": "wrong"})
+            client.post("/api/login", json={"password": "wrong"})
+        response = client.post("/api/login", json={"password": "wrong"})
         assert response.status_code == 429
         assert "Retry-After" in response.headers
 
     def test_throttle_blocks_even_the_right_password(self, settings):
         # Otherwise the lockout would be trivially bypassed by a lucky guess.
         settings.login_max_failures = 2
-        client = login(settings)
+        client = TestClient(create_app(settings))
         for _ in range(2):
-            client.post("/login", data={"password": "wrong"})
-        assert client.post("/login", data={"password": PASSWORD}).status_code == 429
+            client.post("/api/login", json={"password": "wrong"})
+        assert client.post("/api/login", json={"password": PASSWORD}).status_code == 429
+
+
+class TestTokenGate:
+    def test_game_routes_reject_a_missing_token(self, anon):
+        assert anon.post("/api/games").status_code == 401
+        assert anon.get("/api/games/whatever").status_code == 401
+        assert anon.get("/api/session").status_code == 401
+
+    def test_rejects_a_forged_token(self, anon):
+        anon.headers["Authorization"] = "Bearer not-a-real-token"
+        assert anon.post("/api/games").status_code == 401
+
+    def test_rejects_a_token_signed_with_another_key(self, anon):
+        anon.headers["Authorization"] = f"Bearer {issue_token('a-different-secret-key')}"
+        assert anon.post("/api/games").status_code == 401
+
+    def test_rejects_a_malformed_authorization_header(self, anon, client):
+        token = client.headers["Authorization"].removeprefix("Bearer ")
+        for header in (token, f"Basic {token}", "Bearer", "Bearer "):
+            anon.headers["Authorization"] = header
+            assert anon.post("/api/games").status_code == 401
+
+    def test_rejects_an_expired_token(self, settings):
+        settings.token_max_age = 60
+        client = TestClient(create_app(settings))
+        client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
+        assert client.post("/api/games").status_code == 201
+
+        # itsdangerous stamps wall-clock time into the token.
+        real_time = time.time
+        try:
+            time.time = lambda: real_time() + 61
+            assert client.post("/api/games").status_code == 401
+        finally:
+            time.time = real_time
+
+    def test_answers_with_a_bearer_challenge(self, anon):
+        assert anon.post("/api/games").headers.get("WWW-Authenticate") == "Bearer"
+
+    def test_session_check_accepts_a_valid_token(self, client):
+        assert client.get("/api/session").json() == {"valid": True}
+
+
+class TestCors:
+    def test_allows_the_configured_frontend_origin(self, client):
+        response = client.post("/api/games", headers={"Origin": ORIGIN})
+        assert response.headers["access-control-allow-origin"] == ORIGIN
+
+    def test_does_not_allow_an_unknown_origin(self, client):
+        response = client.post("/api/games", headers={"Origin": "http://evil.example"})
+        assert "access-control-allow-origin" not in response.headers
+
+    def test_preflight_permits_the_authorization_header(self, anon):
+        response = anon.options(
+            "/api/games",
+            headers={
+                "Origin": ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+        assert response.status_code == 200
+        assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 
 class TestNewGame:
@@ -139,10 +185,9 @@ class TestGuessing:
         assert result["is_over"] is True
         assert result["answer"] == "crane"
 
-    def test_running_out_reveals_the_answer(self, client, answer, settings):
+    def test_running_out_reveals_the_answer(self, settings):
         settings.max_attempts = 2
-        client = login(settings)
-        client.post("/login", data={"password": PASSWORD})
+        client = authed(settings)
         client.app.state.repository.random_word = lambda rng=None: "crane"
 
         board = new_game(client)
@@ -170,8 +215,7 @@ class TestGuessing:
         assert "5 letters" in response.json()["detail"]
 
     def test_rejects_non_letters(self, client):
-        response = guess(client, new_game(client)["game_id"], "cr4ne")
-        assert response.status_code == 400
+        assert guess(client, new_game(client)["game_id"], "cr4ne").status_code == 400
 
     def test_a_rejected_guess_costs_nothing(self, client):
         game_id = new_game(client)["game_id"]
@@ -179,15 +223,13 @@ class TestGuessing:
         assert client.get(f"/api/games/{game_id}").json()["attempts_remaining"] == 5
 
     def test_rejects_an_oversized_payload(self, client):
-        response = guess(client, new_game(client)["game_id"], "z" * 500)
-        assert response.status_code == 422
+        assert guess(client, new_game(client)["game_id"], "z" * 500).status_code == 422
 
     def test_guessing_after_the_game_ends_conflicts(self, client, answer):
         answer("crane")
         game_id = new_game(client)["game_id"]
         guess(client, game_id, "crane")
-        response = guess(client, game_id, "state")
-        assert response.status_code == 409
+        assert guess(client, game_id, "state").status_code == 409
 
     def test_unknown_game_is_not_found(self, client):
         assert guess(client, "no-such-game", "crane").status_code == 404
@@ -207,7 +249,7 @@ class TestReadGame:
     def test_unknown_game_is_not_found(self, client):
         assert client.get("/api/games/no-such-game").status_code == 404
 
-    def test_expired_game_is_not_found(self, client, settings):
+    def test_expired_game_is_not_found(self, client):
         game_id = new_game(client)["game_id"]
         client.app.state.store.delete(game_id)
         assert client.get(f"/api/games/{game_id}").status_code == 404

@@ -1,11 +1,8 @@
-"""Run the app: python -m wordle"""
+"""Run the API: python -m wordle"""
 
 import uvicorn
 
-from .config import get_settings
-
 if __name__ == "__main__":
-    settings = get_settings()
     uvicorn.run(
         "wordle.app:create_app",
         factory=True,

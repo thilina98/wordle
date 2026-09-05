@@ -12,6 +12,11 @@ Your VPS is not too weak. It is 20 times bigger than this app needs.
 **Use Docker.** Not because the app is heavy, but because Hermes Agent already
 owns the system Python and you do not want the two fighting over it.
 
+**Note there are two services**, run separately: the API on port 8000 and the
+frontend's web server on port 8080. Only the frontend needs to be reachable by
+visitors in a browser — but the browser also calls the API directly, so **both
+ports must be reachable**. That shapes every option below.
+
 **Your real problem is not power. It is reach.** Read the next section before
 you pick how to expose the site.
 
@@ -100,17 +105,18 @@ systemctl status docker --no-pager | grep Memory
 | Total | 4096 MB |
 | Debian/Ubuntu base | ~200 MB |
 | Docker daemon | ~50-80 MB |
-| **Wordle container** | **~100 MB** |
+| **Wordle API container** | **~100 MB** |
+| **Wordle web container** (nginx) | **~10 MB** |
 | Hermes Agent (API only) | ~500 MB-1 GB |
 | Hermes Agent (local memory/models) | 2 GB+ |
 | Left over | 1-3 GB |
 
-Comfortable, unless you run local LLMs for Hermes. If you do, keep the 512 MB
-limit that `docker-compose.yml` already sets on Wordle so it can never crowd
-Hermes out.
+Comfortable, unless you run local LLMs for Hermes. If you do, keep the limits
+`docker-compose.yml` already sets — 512 MB on the API, 64 MB on nginx — so
+neither can crowd Hermes out.
 
 **When to skip Docker.** If you want the absolute smallest footprint, run it
-under systemd instead — see [Option B](#option-b-systemd-no-docker) at the end.
+under systemd instead — see the [systemd appendix](#appendix-systemd-no-docker) at the end.
 It saves the daemon's 50-80 MB and costs you the four things listed above. On a
 4 GB box that trade is not worth it. Use Docker.
 
@@ -155,17 +161,30 @@ Edit `.env`:
 ```ini
 WORDLE_PASSWORD=the-password-you-will-share
 WORDLE_SECRET_KEY=<paste the generated key>
-WORDLE_COOKIE_SECURE=false
+
+# Both of these are what the BROWSER sees. Fill them in after Step 6,
+# when you know your real URLs.
+WORDLE_ALLOWED_ORIGINS=http://[your-ipv6]:8080
+WORDLE_API_BASE=http://[your-ipv6]:8000
 ```
 
 ```bash
 chmod 600 .env
 ```
 
-**About `WORDLE_COOKIE_SECURE`.** Leave it `false` while you serve plain HTTP.
-Set it `true` the moment you have HTTPS — with it on, the browser refuses to
-send the session cookie over HTTP, and you will get an endless login loop and
-no clue why.
+**These last two are the setting people get wrong.** They are not container
+addresses. They are the URLs a visitor's browser uses.
+
+- `WORDLE_API_BASE` gets written into `frontend/config.js` when the web
+  container starts. It is where the browser sends API calls.
+- `WORDLE_ALLOWED_ORIGINS` is the API's CORS allow-list. It must be exactly
+  where the browser loaded the page from — scheme, host and port, no trailing
+  slash.
+
+Symptom of getting them wrong: the password page loads fine, then logging in
+does nothing. The browser console shows a CORS error, or the page says
+"Cannot reach the server". Comma-separate the origins if you have more than one
+way in (an IPv6 URL and a Tailscale URL, say).
 
 ---
 
@@ -174,8 +193,11 @@ no clue why.
 ```bash
 cd /opt/wordle
 docker compose up -d --build
+docker compose ps               # both api and web should be up
 docker compose logs -f          # Ctrl-C to stop watching
-curl -s localhost:8000/healthz  # expect {"status":"ok"}
+
+curl -s localhost:8000/healthz  # API: expect {"status":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/   # web: expect 200
 ```
 
 The compose file uses `network_mode: host`. That is deliberate:
@@ -194,10 +216,14 @@ The compose file uses `network_mode: host`. That is deliberate:
 
 ```bash
 sudo ufw allow 22/tcp                 # keep your SSH in first
-sudo ufw allow 8000/tcp               # only if exposing 8000 directly
+sudo ufw allow 8080/tcp               # the page
+sudo ufw allow 8000/tcp               # the API — the browser calls it directly
 sudo ufw --force enable
 sudo ufw status verbose
 ```
+
+Both ports, not just 8080. The browser fetches the page from 8080 and then
+talks to 8000 itself; there is no server-side proxy between them.
 
 `ufw` covers IPv6 too, as long as `IPV6=yes` is set in `/etc/default/ufw`
 (it is, by default, on current Debian and Ubuntu).
@@ -206,7 +232,8 @@ sudo ufw status verbose
 
 ## Step 6: pick how people reach it
 
-This is the decision that matters. Four options, honestly compared.
+This is the decision that matters. Remember you need **two** ports reachable,
+not one: the page on 8080 and the API on 8000. Four options, honestly compared.
 
 | | Who can reach it | HTTPS | URL | Domain needed | Third party |
 |---|---|---|---|---|---|
@@ -232,24 +259,34 @@ sudo tailscale up
 
 Funnel is off by default and needs turning on in **two** places — the admin
 console and the machine. In the Tailscale admin console, enable Funnel for your
-tailnet (Access Controls → add the `funnel` node attribute). Then:
+tailnet (Access Controls → add the `funnel` node attribute).
+
+Funnel allows exactly three public ports: 443, 8443 and 10000. You need two, so
+put the page on 443 and the API on 8443:
 
 ```bash
-sudo tailscale funnel --bg 8000
-sudo tailscale funnel status        # shows your public URL
+sudo tailscale funnel --bg --https 443  8080   # the page
+sudo tailscale funnel --bg --https 8443 8000   # the API
+sudo tailscale funnel status                   # shows both public URLs
 ```
 
-Then set HTTPS on, because Tailscale terminates TLS for you:
+Now fill in the two URLs, using the hostname Funnel printed:
+
+```ini
+# .env
+WORDLE_ALLOWED_ORIGINS=https://your-box.your-tailnet.ts.net
+WORDLE_API_BASE=https://your-box.your-tailnet.ts.net:8443
+```
 
 ```bash
-sed -i 's/WORDLE_COOKIE_SECURE=false/WORDLE_COOKIE_SECURE=true/' .env
-docker compose up -d
+docker compose up -d      # rebuilds config.js with the new API base
 ```
+
+Visit `https://your-box.your-tailnet.ts.net`. Note the page URL has no port
+(443 is implied) but the API URL does.
 
 Worth knowing:
 
-- Funnel only listens on 443, 8443 and 10000. You do not choose the public
-  port; `--bg 8000` means "forward the public 443 to my local 8000".
 - The name is always `*.ts.net`. No custom domain.
 - Funnel is still labelled beta.
 - Anyone with the link can reach the page. That is what you want here — your
@@ -257,15 +294,23 @@ Worth knowing:
 
 ### Option B — the NAT IPv4 port (simplest, no HTTPS)
 
-Take a port from your forwarded range, say the panel forwards public `20001` to
-your `8000`. Then the site is at `http://<shared-ipv4>:20001`.
+You need **two** ports from your forwarded range. Say the panel forwards public
+`20001` to your `8080` and public `20002` to your `8000`:
+
+```ini
+# .env
+WORDLE_ALLOWED_ORIGINS=http://<shared-ipv4>:20001
+WORDLE_API_BASE=http://<shared-ipv4>:20002
+```
+
+Then the site is at `http://<shared-ipv4>:20001`.
 
 Nothing to install. Works for every visitor. But the password travels in clear
 text, so treat this as a "just me, just testing" option, or pair it with a
 password you use nowhere else.
 
-If your provider maps only a fixed internal port, change the port in
-`docker-compose.yml` and in `ufw` to match.
+If your provider forwards only one port, this option is out — use Tailscale
+Funnel instead.
 
 ### Option C — direct IPv6, with a real certificate
 
@@ -278,28 +323,47 @@ certificates last ~6 days so renewal must be automated, and you must use the
 `http-01` or `tls-alpn-01` challenge (DNS validation cannot work for an IP).
 With Caddy in front:
 
+Here Caddy is worth it, because it can serve both halves on one port and one
+certificate — the only option that avoids the two-port dance:
+
 ```
 # /etc/caddy/Caddyfile
 [2001:db8::1] {
-    tls { ca https://acme-v02.api.letsencrypt.org/directory
-          ca_root /etc/ssl/certs/ca-certificates.crt }
-    reverse_proxy localhost:8000
+    handle /api/* {
+        reverse_proxy localhost:8000
+    }
+    handle {
+        reverse_proxy localhost:8080
+    }
 }
 ```
 
-Useful as a second door alongside Option A. Not enough on its own.
+Then both URLs are the same origin, and CORS stops mattering:
+
+```ini
+# .env
+WORDLE_ALLOWED_ORIGINS=https://[2001:db8::1]
+WORDLE_API_BASE=https://[2001:db8::1]
+```
+
+Useful as a second door alongside Option A. Not enough on its own, because half
+your visitors cannot reach IPv6 at all.
 
 ### Option D — Cloudflare Quick Tunnel (for a quick test)
 
 ```bash
 docker run --rm --network host cloudflare/cloudflared:latest \
-  tunnel --url http://localhost:8000 --edge-ip-version auto
+  tunnel --url http://localhost:8080 --edge-ip-version auto
 ```
 
 It prints a free `https://something-random.trycloudflare.com` URL. No account,
 no domain. But the URL changes every time the tunnel restarts, and Cloudflare
 does not intend it for permanent use. Good for showing someone the site in the
 next ten minutes; not for keeping it up.
+
+Awkward here, because you would need a **second** tunnel for the API and both
+random URLs change on every restart, so `.env` goes stale each time. Fine for a
+ten-minute demo, painful beyond that. Use Option A if you want it to stay up.
 
 If your VPS ever loses outbound IPv4, add `--edge-ip-version 6`. `auto` picks
 for you based on what the OS has, which on your box means IPv4 via NAT.
@@ -309,18 +373,31 @@ for you based on what the OS has, which on your box means IPv4 via NAT.
 ## Step 7: check it works
 
 ```bash
-# On the box
-curl -s localhost:8000/healthz
+# Both services alive
+curl -s localhost:8000/healthz                              # {"status":"ok"}
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8080/    # 200
 
-# The gate must hold: this has to be 303, not 200
+# The gate must hold: this has to be 401, not 201
+curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
+
+# The API must serve no pages: 404
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/
 
-# And this must be 401, not 200
-curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
+# A real login, end to end
+curl -s -X POST localhost:8000/api/login \
+  -H 'Content-Type: application/json' -d '{"password":"YOUR-PASSWORD"}'
 ```
 
-Then open the URL on your phone, on mobile data rather than your own Wi-Fi.
+Then check the frontend picked up the right API base:
+
+```bash
+curl -s localhost:8080/config.js     # must show your public API URL
+```
+
+Finally open the site on your phone, on mobile data rather than your own Wi-Fi.
 That is the test that catches "works for me only" — especially with Option C.
+If the page loads but login does nothing, open the browser console: a CORS
+error means `WORDLE_ALLOWED_ORIGINS` does not match where the page came from.
 
 ---
 
@@ -350,14 +427,21 @@ disk.
 restart wipes them and players get "that game expired" and a fresh board. Fine
 for a word game; know that it is the behaviour.
 
+**The two URLs in `.env` are browser URLs, not container URLs.** This is the
+single most common way to break the split setup. `WORDLE_API_BASE` must be
+reachable from a visitor's browser; `localhost` works only when the visitor is
+on the VPS itself. Change either URL and you must run `docker compose up -d`
+again, because `config.js` is regenerated at container start.
+
 **Run exactly one worker.** The compose file sets `--workers 1`. Do not raise
 it. A second worker is a separate process with its own memory, so it cannot see
 games the first one created, and players would get random 404s. If you ever need
 more than one, games have to move to Redis first — the code has a `GameStore`
 protocol for exactly that.
 
-**`WORDLE_COOKIE_SECURE=true` on plain HTTP means an endless login loop.** The
-browser silently refuses to send the cookie. Match the setting to your setup.
+**Mixed HTTP and HTTPS will be blocked.** If the page is served over HTTPS and
+`WORDLE_API_BASE` is `http://`, browsers block the request as mixed content and
+the console says so. Both must be the same scheme.
 
 **Docker's published ports ignore `ufw`.** Not an issue with the compose file as
 written, because it uses host networking. It becomes an issue the moment
@@ -372,12 +456,14 @@ compose file already sets, so a runaway container cannot starve Hermes.
 
 ---
 
-## Option B: systemd, no Docker
+## Appendix: systemd, no Docker
 
 Only if you want the last 50 MB back.
 
+You need two units: the API, and something to serve the frontend's files.
+
 ```bash
-sudo apt update && sudo apt install -y python3-venv git
+sudo apt update && sudo apt install -y python3-venv git nginx
 sudo mkdir -p /opt/wordle && sudo chown $USER /opt/wordle
 git clone <your-github-url> /opt/wordle
 cd /opt/wordle/backend
@@ -385,6 +471,8 @@ python3 -m venv .venv
 .venv/bin/pip install poetry
 .venv/bin/poetry install --only main
 ```
+
+**The API:**
 
 ```ini
 # /etc/systemd/system/wordle.service
@@ -418,6 +506,34 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now wordle
 sudo systemctl status wordle --no-pager
 ```
+
+**The frontend.** No systemd unit needed — point nginx at the directory. Write
+`config.js` by hand, since there is no container start hook to do it:
+
+```bash
+cat > /opt/wordle/frontend/config.js <<'JS'
+window.WORDLE_CONFIG = { apiBase: 'http://[your-ipv6]:8000' };
+JS
+```
+
+```nginx
+# /etc/nginx/sites-available/wordle
+server {
+    listen 8080;
+    listen [::]:8080;
+    root /opt/wordle/frontend;
+    index index.html;
+    location / { try_files $uri $uri/ =404; }
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/wordle /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Remember to re-run the `config.js` command after every `git pull`, since the
+pull will overwrite it.
 
 Python 3.11 or newer is required. Check with `python3 --version` — Debian 12
 ships 3.11, Ubuntu 24.04 ships 3.12, both fine.

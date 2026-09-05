@@ -4,22 +4,20 @@
 FROM python:3.13-slim AS build
 WORKDIR /src
 RUN pip install --no-cache-dir poetry==2.4.2
-COPY backend/pyproject.toml ./
-COPY backend/wordle ./wordle
+COPY pyproject.toml ./
+COPY wordle ./wordle
 RUN poetry build --format wheel
 
 FROM python:3.13-slim
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    WORDLE_FRONTEND_DIR=/app/frontend
+    PYTHONDONTWRITEBYTECODE=1
 
-# Runs as a non-root user; nothing in /app needs to be writable.
+# Runs as a non-root user; nothing in the image needs to be writable.
 RUN useradd --system --uid 10001 --create-home --shell /usr/sbin/nologin wordle
 WORKDIR /app
 
 COPY --from=build /src/dist/*.whl /tmp/
 RUN pip install --no-cache-dir /tmp/*.whl && rm -f /tmp/*.whl
-COPY frontend /app/frontend
 
 USER wordle
 EXPOSE 8000

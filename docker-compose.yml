@@ -1,11 +1,19 @@
-# Host networking, so the container answers on both IPv6 and IPv4 without
-# needing IPv6 turned on in the Docker daemon. See DEPLOYMENT.md.
+# Two services, run separately, talking over HTTP.
+#
+# Host networking, so both answer on IPv6 and IPv4 without turning on IPv6 in
+# the Docker daemon. See DEPLOYMENT.md.
+#
+# The two URLs below are what the *browser* uses, not what the containers use.
+# They must be addresses a visitor can actually reach:
+#   WORDLE_API_BASE        where the browser finds the API   -> baked into config.js
+#   WORDLE_ALLOWED_ORIGINS where the browser loaded the page -> the API's CORS list
+# Get either wrong and the page loads but every request fails.
 
 services:
-  wordle:
-    build: .
-    image: wordle:1.0.0
-    container_name: wordle
+  api:
+    build: ./backend
+    image: wordle-api:2.0.0
+    container_name: wordle-api
     restart: unless-stopped
     network_mode: host
     env_file: .env
@@ -25,11 +33,26 @@ services:
     deploy:
       resources:
         limits:
-          # Generous for this app; leaves the box to Hermes Agent.
           memory: 512M
           cpus: "1.0"
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: { max-size: "10m", max-file: "3" }
+
+  web:
+    build: ./frontend
+    image: wordle-web:2.0.0
+    container_name: wordle-web
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      # Rewritten into config.js at container start.
+      WORDLE_API_BASE: ${WORDLE_API_BASE:-http://localhost:8000}
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.5"
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

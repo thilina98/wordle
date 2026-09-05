@@ -6,14 +6,28 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="theme-color" content="#121213">
 <title>Wordle</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
+
+<!-- Password gate. Shown until the API hands back a token. -->
+<section id="gate" class="gate">
+  <form id="login-form" autocomplete="on">
+    <h1>Wordle</h1>
+    <p class="hint">This game is private. Enter the password to play.</p>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password"
+           required autofocus enterkeyhint="go">
+    <button class="primary" type="submit">Enter</button>
+    <p id="login-error" class="error" role="alert" hidden></p>
+  </form>
+</section>
+
+<!-- The game. Hidden until the gate is passed. -->
+<section id="game" class="game" hidden>
   <header class="bar">
     <h1>Wordle</h1>
-    <form method="post" action="/logout">
-      <button class="link" type="submit">Sign out</button>
-    </form>
+    <button id="signout" class="link" type="button">Sign out</button>
   </header>
 
   <main>
@@ -30,7 +44,10 @@
       <button id="again" class="primary" type="button">Play again</button>
     </div>
   </div>
+</section>
 
-  <script src="/static/app.js"></script>
+<script src="config.js"></script>
+<script src="api.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

@@ -9,27 +9,38 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .game import MAX_ATTEMPTS, WORD_LENGTH
 
 
 class Settings(BaseSettings):
+    # Two candidate .env files so one file at the repo root serves both Docker
+    # and a local run from backend/. A backend/.env, if present, wins.
     model_config = SettingsConfigDict(
-        env_prefix="WORDLE_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_prefix="WORDLE_",
+        env_file=("../.env", ".env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     # --- Secrets. No defaults on purpose.
-    password: str = Field(min_length=1, description="Shared password for site access")
-    secret_key: str = Field(min_length=16, description="Key signing the session cookie")
+    password: str = Field(min_length=1, description="Shared password for API access")
+    secret_key: str = Field(min_length=16, description="Key signing the access token")
 
-    # --- Session cookie
-    session_max_age: int = Field(default=60 * 60 * 12, ge=60)
-    cookie_secure: bool = Field(
-        default=False,
-        description="Require HTTPS for the cookie. Leave false when serving over plain HTTP.",
+    # --- Access token
+    token_max_age: int = Field(default=60 * 60 * 12, ge=60, description="Token lifetime, seconds")
+
+    # --- CORS. The frontend is a separate origin, so it must be named here.
+    # NoDecode: without it pydantic-settings JSON-decodes the value straight
+    # from the environment, and a comma-separated list never reaches the
+    # validator below.
+    allowed_origins: Annotated[list[str], NoDecode] = Field(
+        default=["http://localhost:8080", "http://127.0.0.1:8080"],
+        description="Frontend origins allowed to call the API. Comma-separated in the environment.",
     )
 
     # --- Game
@@ -43,8 +54,13 @@ class Settings(BaseSettings):
     login_max_failures: int = Field(default=10, ge=1)
     login_lockout_seconds: int = Field(default=300, ge=1)
 
-    # --- Frontend
-    frontend_dir: Path = Field(default=Path(__file__).resolve().parents[2] / "frontend")
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        """Accept "http://a, http://b" from the environment as well as a list."""
+        if isinstance(value, str):
+            return [origin.strip() for origin in value.split(",") if origin.strip()]
+        return value
 
 
 @lru_cache

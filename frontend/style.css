@@ -20,12 +20,76 @@
 body {
   margin: 0;
   height: 100dvh;
-  display: flex;
-  flex-direction: column;
   background: var(--bg);
   color: var(--text);
   font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
+}
+
+[hidden] { display: none !important; }
+
+/* --- Password gate --- */
+
+.gate {
+  height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px calc(16px + env(safe-area-inset-right)) 24px calc(16px + env(safe-area-inset-left));
+}
+
+.gate form { width: 100%; max-width: 320px; text-align: center; }
+
+.gate h1 {
+  margin: 0 0 4px;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+
+.gate .hint { margin: 0 0 28px; color: var(--muted); font-size: .9rem; }
+
+.gate label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: .8rem;
+  color: var(--muted);
+  text-align: left;
+}
+
+.gate input {
+  width: 100%;
+  padding: 14px;
+  font: inherit;
+  color: inherit;
+  background: #1f1f21;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.gate input:focus-visible {
+  outline: 2px solid var(--hit);
+  outline-offset: 1px;
+  border-color: var(--hit);
+}
+
+.gate .primary { margin-top: 14px; }
+
+.error {
+  margin: 16px 0 0;
+  padding: 10px;
+  font-size: .875rem;
+  color: #fca5a5;
+  background: #3f1d1d;
+  border-radius: 8px;
+}
+
+/* --- Game --- */
+
+.game {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
 }
 
 /* --- Header --- */
@@ -46,8 +110,6 @@ body {
   letter-spacing: .16em;
   text-transform: uppercase;
 }
-
-.bar form { margin: 0; }
 
 .link {
   padding: 6px 4px;
@@ -237,6 +299,7 @@ main {
 }
 
 .primary:hover { background: #4a7d46; }
+.primary:disabled { opacity: .6; cursor: default; }
 
 :where(button, input):focus-visible {
   outline: 2px solid #fff;

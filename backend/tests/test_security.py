@@ -1,8 +1,17 @@
-"""Contract tests for password checking and login throttling."""
+"""Contract tests for password checking, throttling and access tokens."""
+
+import time
 
 import pytest
 
-from wordle.security import LoginThrottle, verify_password
+from wordle.security import (
+    LoginThrottle,
+    TokenError,
+    bearer_token,
+    issue_token,
+    verify_password,
+    verify_token,
+)
 
 
 class TestVerifyPassword:
@@ -81,3 +90,57 @@ class TestLoginThrottle:
 
     def test_retry_after_is_zero_when_unlocked(self):
         assert LoginThrottle().retry_after("1.2.3.4") == 0
+
+
+class TestTokens:
+    KEY = "a-secret-key-long-enough"
+
+    def test_a_freshly_issued_token_verifies(self):
+        verify_token(issue_token(self.KEY), self.KEY, max_age=60)
+
+    def test_rejects_a_token_from_another_key(self):
+        with pytest.raises(TokenError):
+            verify_token(issue_token("some-other-secret-key"), self.KEY, max_age=60)
+
+    def test_rejects_a_tampered_token(self):
+        token = issue_token(self.KEY)
+        with pytest.raises(TokenError):
+            verify_token(token[:-1] + ("A" if token[-1] != "A" else "B"), self.KEY, max_age=60)
+
+    def test_rejects_gibberish(self):
+        with pytest.raises(TokenError):
+            verify_token("not-a-token", self.KEY, max_age=60)
+
+    def test_rejects_an_expired_token(self):
+        token = issue_token(self.KEY)
+        real_time = time.time
+        try:
+            time.time = lambda: real_time() + 120
+            with pytest.raises(TokenError, match="expired"):
+                verify_token(token, self.KEY, max_age=60)
+        finally:
+            time.time = real_time
+
+    def test_tokens_carry_no_secret(self):
+        assert "granted" not in issue_token(self.KEY)
+
+
+class TestBearerHeader:
+    def test_reads_a_bearer_token(self):
+        assert bearer_token("Bearer abc123") == "abc123"
+
+    def test_scheme_is_case_insensitive(self):
+        assert bearer_token("bearer abc123") == "abc123"
+
+    def test_rejects_a_missing_header(self):
+        with pytest.raises(TokenError):
+            bearer_token(None)
+
+    def test_rejects_another_scheme(self):
+        with pytest.raises(TokenError):
+            bearer_token("Basic abc123")
+
+    def test_rejects_an_empty_token(self):
+        for header in ("Bearer", "Bearer ", ""):
+            with pytest.raises(TokenError):
+                bearer_token(header)
