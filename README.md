@@ -74,6 +74,21 @@ Open **http://localhost:8080** and enter the password from `secrets/wordle_passw
 The frontend needs no build step and no Node. Any static server will do;
 `http.server` is just the one that is already installed.
 
+## Run it in Docker
+
+```bash
+docker compose up -d --build
+```
+
+Page on **http://localhost:8080**, API on **8000**. Both ports are needed: the
+browser fetches the page from 8080 and then calls 8000 directly.
+
+| File | For |
+|---|---|
+| `docker-compose.yml` | Everywhere. Published ports, hardened, works on Mac and Linux. |
+| `docker-compose.prod.yml` | The VPS, when host networking is needed. See DEPLOYMENT.md. |
+| `docker-compose.dev.yml` | `docker compose ... watch` — syncs edits into the containers. |
+
 ## Tests
 
 ```bash

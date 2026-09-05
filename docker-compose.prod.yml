@@ -1,0 +1,32 @@
+# Production override for the VPS.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Swaps published ports for host networking. You may not need it -- try the
+# base file first and check IPv6 actually works:
+#
+#   docker compose up -d
+#   docker compose ps          # look for [::]:8080->8080 in the Ports column
+#   curl -6 http://[your-ipv6]:8080/
+#
+# Use this override when either is true:
+#
+#   1. IPv6 is not being published. Docker 27+ enables ip6tables by default and
+#      publishes on both stacks, but older daemons, or one with ip6tables
+#      turned off, write IPv4 rules only. Host networking answers on both with
+#      no daemon configuration at all.
+#   2. You rely on ufw. Published Docker ports bypass ufw rules -- a well-known
+#      way to expose a service you believed was firewalled. With host
+#      networking there is no port publishing, so ufw applies normally.
+#
+# Do not use this on Docker Desktop for Mac or Windows: there, "host" is the
+# Linux VM's network, not your machine's, and nothing will be reachable.
+
+services:
+  api:
+    network_mode: host
+    ports: !reset []
+
+  web:
+    network_mode: host
+    ports: !reset []

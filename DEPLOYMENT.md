@@ -200,7 +200,7 @@ way in (an IPv6 URL and a Tailscale URL, say).
 ```bash
 cd /opt/wordle
 docker compose up -d --build
-docker compose ps               # both api and web should be up
+docker compose ps               # both api and web should be up, with ports
 docker compose logs -f          # Ctrl-C to stop watching
 
 curl -s localhost:8000/healthz  # API: expect {"status":"ok"}
@@ -227,17 +227,36 @@ docker exec wordle-api ls -l /run/secrets/    # the two secret files
 docker inspect wordle-api --format '{{json .Config.Env}}' | grep -c PASSWORD   # 0
 ```
 
-### Why host networking
+### Ports, and whether you need the production override
 
-The compose file uses `network_mode: host`. That is deliberate:
+The base file publishes ports: **8080** for the page, **8000** for the API.
+Both must be reachable — the browser loads the page from 8080 and then calls
+8000 itself, with no proxy in between.
 
-- The container answers on IPv6 **and** IPv4 with no extra configuration.
-  Docker's normal port publishing (`-p 80:8000`) only writes IPv4 firewall
-  rules unless you enable IPv6 in `/etc/docker/daemon.json`, and the exact
-  behaviour differs between Docker versions. Host networking sidesteps all of it.
-- Your firewall keeps working. Published Docker ports bypass `ufw` rules —
-  a classic way to expose a service you thought was blocked. With host
-  networking there is no port publishing, so `ufw` applies normally.
+Check IPv6 before doing anything else:
+
+```bash
+docker compose ps        # want [::]:8080->8080 in the Ports column, not just 0.0.0.0
+curl -6 http://[your-ipv6]:8080/
+```
+
+If IPv6 is published and you are happy with the firewall situation, you are
+done — the base file is enough.
+
+Switch to host networking if either applies:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+- **IPv6 is not being published.** Docker 27 and later turn on `ip6tables` by
+  default and publish on both stacks. An older daemon, or one with `ip6tables`
+  disabled, writes IPv4 rules only. Host networking answers on both regardless.
+- **You rely on `ufw`.** Published Docker ports bypass `ufw` rules, which is a
+  well-known way to expose a service you thought was firewalled. Host
+  networking has no port publishing, so `ufw` applies normally.
+
+Check your daemon version with `docker version --format "{{.Server.Version}}"`.
 
 ---
 

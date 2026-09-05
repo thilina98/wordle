@@ -1,7 +1,10 @@
 # Two services, run separately, talking over HTTP.
 #
-# Host networking, so both answer on IPv6 and IPv4 without turning on IPv6 in
-# the Docker daemon. See DEPLOYMENT.md.
+#   docker compose up -d --build          works everywhere: Linux, Mac, Windows
+#
+# On the VPS, add the production override to get IPv6 as well:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
 # The two URLs in .env are what the *browser* uses, not what the containers
 # use. They must be addresses a visitor can actually reach:
@@ -28,8 +31,9 @@ services:
       dockerfile: Dockerfile
     image: wordle-api:2.1.0
     container_name: wordle-api
-    network_mode: host
     user: "10001:10001"
+    ports:
+      - "8000:8000"
 
     # Secrets as files, not environment variables: `docker inspect` and
     # /proc/<pid>/environ both expose the environment, neither exposes these.
@@ -75,8 +79,9 @@ services:
       dockerfile: Dockerfile
     image: wordle-web:2.1.0
     container_name: wordle-web
-    network_mode: host
     user: "101:101"
+    ports:
+      - "8080:8080"
 
     environment:
       # Rewritten into config.js when the container starts.

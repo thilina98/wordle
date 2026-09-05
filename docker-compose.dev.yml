@@ -6,17 +6,10 @@
 # .py or .js file shows up without a rebuild. It needs a writable filesystem,
 # which is why the hardening in the base file is relaxed here and only here.
 #
-# It also publishes ports instead of using host networking. On Docker Desktop
-# for Mac and Windows, `network_mode: host` puts the container on the Linux
-# VM's network, not the machine's, so localhost:8000 reaches nothing. The base
-# file keeps host networking because that is what the Linux VPS wants.
 
 services:
   api:
     read_only: false
-    network_mode: bridge
-    ports:
-      - "8000:8000"
     environment:
       # Reloads on edit; never use this in production.
       WORDLE_ALLOWED_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
@@ -33,10 +26,6 @@ services:
 
   web:
     read_only: false
-    network_mode: bridge
-    ports:
-      - "8080:8080"
-    depends_on: !reset []
     develop:
       watch:
         - action: sync
