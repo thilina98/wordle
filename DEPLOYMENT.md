@@ -126,9 +126,94 @@ It saves the daemon's 50-80 MB and costs you the four things listed above. On a
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
+```
+
+### That block of text at the end is not an error
+
+The script finishes by printing this, and it looks like a complaint:
+
+```
+To run Docker as a non-privileged user, consider setting up the
+Docker daemon in rootless mode for your user:
+
+    dockerd-rootless-setuptool.sh install
+
+WARNING: Access to the remote API on a privileged Docker daemon is equivalent
+         to root access on the host.
+```
+
+It is the script's **success message**. In the source it is a function called
+`echo_docker_as_nonroot`, and it runs immediately after the daemon starts,
+followed by `exit 0`:
+
+```sh
+start_docker_daemon
+echo_docker_as_nonroot
+exit 0
+```
+
+It is telling you two optional things: that rootless mode exists, and that
+anyone you add to the `docker` group effectively has root. Neither is a
+failure.
+
+A real permissions failure from this script looks completely different, and
+exits 1:
+
+```
+Error: this installer needs the ability to run commands as root.
+We are unable to find either "sudo" or "su" available to make this happen.
+```
+
+Check which one you got:
+
+```bash
+echo $?                              # 0 means the install worked
+systemctl is-active docker           # active
+sudo docker version                  # both Client and Server sections print
+```
+
+### Then: running docker without sudo
+
+This is the part people actually trip on. The daemon listens on a Unix socket
+owned by root:
+
+```bash
+ls -l /var/run/docker.sock
+# srw-rw---- 1 root docker 0 ... /var/run/docker.sock
+```
+
+Mode `rw-rw----` means root and the `docker` group can use it, nobody else. So
+`docker ps` as your normal user gives:
+
+```
+permission denied while trying to connect to the Docker daemon socket
+```
+
+That is a file permission on the socket, not a problem with the install. Join
+the group:
+
+```bash
 sudo usermod -aG docker $USER
 newgrp docker            # or log out and back in
 docker run --rm hello-world
+```
+
+`newgrp` is needed because group membership is attached to your login session.
+Adding yourself to a group does not change the shell you are already sitting
+in.
+
+**What the WARNING meant.** Being in the `docker` group is equivalent to root:
+you can start a container that mounts `/` and edit anything. That is expected
+on a box you own. Do not add other people to it casually.
+
+### One IPv6 note
+
+Your VPS reaches the internet over NAT IPv4, so pulls work regardless. Worth
+knowing anyway: Docker Hub now publishes AAAA records, so an IPv6-only host can
+pull images too. That was not true for years.
+
+```bash
+dig +short AAAA registry-1.docker.io    # answers
 ```
 
 ---
@@ -233,12 +318,15 @@ The base file publishes ports: **8080** for the page, **8000** for the API.
 Both must be reachable — the browser loads the page from 8080 and then calls
 8000 itself, with no proxy in between.
 
-Check IPv6 before doing anything else:
+Check what Docker bound, from on the box:
 
 ```bash
 docker compose ps        # want [::]:8080->8080 in the Ports column, not just 0.0.0.0
-curl -6 http://[your-ipv6]:8080/
+curl -6 http://[::1]:8080/            # loopback, so the firewall is not involved yet
 ```
+
+Testing from outside needs the firewall open first — that is Step 5. Come back
+and run `curl -6 http://[your-ipv6]:8080/` from another machine after it.
 
 If IPv6 is published and you are happy with the firewall situation, you are
 done — the base file is enough.
@@ -270,6 +358,9 @@ sudo ufw --force enable
 sudo ufw status verbose
 ```
 
+Open the ports the **host** listens on. If you went with Option B and your
+provider forwards fixed numbers like 20001 and 20002, allow those instead.
+
 Both ports, not just 8080. The browser fetches the page from 8080 and then
 talks to 8000 itself; there is no server-side proxy between them.
 
@@ -287,7 +378,7 @@ not one: the page on 8080 and the API on 8000. Four options, honestly compared.
 |---|---|---|---|---|---|
 | **A. Tailscale Funnel** | everyone | yes, free | stable `ts.net` name | no | Tailscale |
 | **B. NAT IPv4 port** | everyone | **no** | `http://ip:20001` | no | none |
-| **C. Direct IPv6** | ~half of users | possible | `http://[ipv6]:8000` | no | none |
+| **C. Direct IPv6** | ~half of users | possible | `http://[ipv6]:8080` | no | none |
 | **D. Cloudflare Quick Tunnel** | everyone | yes, free | **changes on restart** | no | Cloudflare |
 
 **Recommended: A.** It is the only option that gives you HTTPS and reaches
@@ -356,6 +447,24 @@ Then the site is at `http://<shared-ipv4>:20001`.
 Nothing to install. Works for every visitor. But the password travels in clear
 text, so treat this as a "just me, just testing" option, or pair it with a
 password you use nowhere else.
+
+**If your provider cannot choose the internal port.** Some panels forward
+`public 20001 → your 20001` with no way to map it to 8080. Then the containers
+have to listen on those numbers. Override them rather than editing the base
+file:
+
+```yaml
+# docker-compose.override.yml  (compose picks this up automatically)
+services:
+  web:
+    ports: !override ["20001:8080"]
+  api:
+    ports: !override ["20002:8000"]
+```
+
+The left number is the host port your provider forwards; the right one stays
+8080/8000, because that is what the processes inside the containers bind to.
+Open the host-side numbers in `ufw`, not 8080/8000.
 
 If your provider forwards only one port, this option is out — use Tailscale
 Funnel instead.
