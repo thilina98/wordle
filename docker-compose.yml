@@ -33,7 +33,7 @@ services:
     container_name: wordle-api
     user: "10001:10001"
     ports:
-      - "8000:8000"
+      - "40274:8000"
 
     # Secrets as files, not environment variables: `docker inspect` and
     # /proc/<pid>/environ both expose the environment, neither exposes these.
@@ -81,7 +81,7 @@ services:
     container_name: wordle-web
     user: "101:101"
     ports:
-      - "8080:8080"
+      - "40275:8080"
 
     environment:
       # Rewritten into config.js when the container starts.
