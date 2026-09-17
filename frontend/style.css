@@ -13,6 +13,7 @@
   --miss: #3a3a3c;
   --key: #818384;
   --gap: 5px;
+  --key-gap: 5px;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -224,15 +225,19 @@ main {
   padding-bottom: 4px;
 }
 
+/* One shared column grid for every row, so a letter is the same width
+   everywhere. Key placement is set by app.js from the KEYBOARD config. */
 .keys {
-  display: flex;
-  gap: 5px;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(var(--keyboard-columns, 20), 1fr);
+  /* No grid gap: a key spans several columns and a gap would open up inside
+     it. The spacing comes from key margins instead. */
+  margin: 0 calc(var(--key-gap) / -2);
 }
 
 .key {
-  flex: 1 1 auto;
   min-width: 0;
+  margin: 0 calc(var(--key-gap) / 2);
   height: clamp(44px, 7.5dvh, 58px);
   padding: 0 2px;
   font-family: inherit;
@@ -247,7 +252,7 @@ main {
 }
 
 .key:active { filter: brightness(1.25); }
-.key[data-wide] { flex: 1.5 1 auto; font-size: clamp(.6rem, 2.8vw, .75rem); }
+.key[data-wide] { font-size: clamp(.6rem, 2.8vw, .75rem); }
 
 .key[data-colour="hit"]     { background: var(--hit); }
 .key[data-colour="present"] { background: var(--present); }
