@@ -14,6 +14,9 @@
   --key: #818384;
   --gap: 5px;
   --key-gap: 5px;
+
+  /* How far the end-of-game card sits below centre. */
+  --result-drop: 14dvh;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -279,6 +282,10 @@ main {
   background: #1f1f21;
   border: 1px solid var(--border);
   border-radius: 12px;
+
+  /* Nudged down from centre so the board above stays visible. */
+  position: relative;
+  top: var(--result-drop);
 }
 
 .card h2 {
