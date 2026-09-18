@@ -16,7 +16,7 @@
   --key-gap: 5px;
 
   /* How far the end-of-game card sits below centre. */
-  --result-drop: 14dvh;
+  --result-drop: 16dvh;
 }
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
