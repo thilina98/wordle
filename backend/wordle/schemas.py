@@ -16,6 +16,14 @@ class TokenResponse(BaseModel):
     expires_in: int
 
 
+class CreateGameRequest(BaseModel):
+    """Options for a new game. Every field optional, so an empty body works."""
+
+    word_length: int | None = Field(
+        default=None, ge=2, le=32, description="None takes the server's default length."
+    )
+
+
 class GuessRequest(BaseModel):
     # Length and character rules live in the domain, so the error text is
     # identical wherever a guess arrives from. The cap here just bounds input.

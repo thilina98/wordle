@@ -16,24 +16,32 @@ from .api import router as api_router
 from .config import Settings, get_settings
 from .security import LoginThrottle
 from .store import GameStore, InMemoryGameStore, SqliteGameStore
-from .words import WordRepository
+from .words import WordCatalogue, WordListError
 
 
-def _word_lists(settings: Settings) -> tuple[WordRepository, WordRepository]:
-    """Answers and allowed guesses, either overridden or the shipped pair."""
-    if settings.answers_path or settings.dictionary_path:
-        # Overriding one and not the other is almost always a mistake, so a
-        # missing path falls back to the same file rather than the shipped one.
-        answers_path = settings.answers_path or settings.dictionary_path
-        dictionary_path = settings.dictionary_path or settings.answers_path
-        return (
-            WordRepository(answers_path, word_length=settings.word_length),
-            WordRepository(dictionary_path, word_length=settings.word_length),
-        )
-    return WordRepository.default_pair(word_length=settings.word_length)
+def _catalogue(settings: Settings) -> WordCatalogue:
+    """Every word length this deployment can serve.
+
+    The shipped lists are five-letter. Serving another length means installing
+    a directory for it and pointing WORDLE_WORD_LISTS_DIR at the root.
+    """
+    try:
+        if settings.word_lists_dir:
+            return WordCatalogue.from_directory(
+                settings.word_lists_dir, default_length=settings.word_length
+            )
+        return WordCatalogue.packaged(default_length=settings.word_length)
+    except WordListError as exc:
+        if settings.word_length is not None and not settings.word_lists_dir:
+            raise WordListError(
+                f"WORDLE_WORD_LENGTH={settings.word_length} is not among the shipped "
+                f"word lists. Point WORDLE_WORD_LISTS_DIR at a directory holding a "
+                f"{settings.word_length}/ list, or leave WORDLE_WORD_LENGTH unset. ({exc})"
+            ) from exc
+        raise
 
 
-def _game_store(settings: Settings, dictionary: WordRepository) -> GameStore:
+def _game_store(settings: Settings, catalogue: WordCatalogue) -> GameStore:
     """Games on disk by default, so a container rebuild does not end them."""
     if settings.store == "memory":
         return InMemoryGameStore(
@@ -41,7 +49,7 @@ def _game_store(settings: Settings, dictionary: WordRepository) -> GameStore:
         )
     return SqliteGameStore(
         settings.data_dir / "games.db",
-        vocabulary=dictionary.vocabulary,
+        vocabulary_for=catalogue.vocabulary_for,
         ttl_seconds=settings.game_ttl_seconds,
         max_games=settings.max_games,
     )
@@ -50,7 +58,7 @@ def _game_store(settings: Settings, dictionary: WordRepository) -> GameStore:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
-    answers, dictionary = _word_lists(settings)
+    catalogue = _catalogue(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -69,9 +77,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url=None,
     )
     app.state.settings = settings
-    app.state.answers = answers
-    app.state.dictionary = dictionary
-    app.state.store = _game_store(settings, dictionary)
+    app.state.catalogue = catalogue
+    app.state.store = _game_store(settings, catalogue)
     app.state.throttle = LoginThrottle(
         max_failures=settings.login_max_failures,
         lockout_seconds=settings.login_lockout_seconds,

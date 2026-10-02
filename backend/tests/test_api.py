@@ -2,7 +2,7 @@
 
 import time
 
-from tests.conftest import ORIGIN, PASSWORD
+from tests.conftest import ANSWERS, EXTRA_GUESSES, ORIGIN, PASSWORD, write_length
 from wordle.security import issue_token
 
 
@@ -184,7 +184,7 @@ class TestGuessing:
     def test_running_out_reveals_the_answer(self, settings, make_client):
         settings.max_attempts = 2
         client = make_client(settings)
-        client.app.state.answers.random_word = lambda rng=None: "crane"
+        client.app.state.catalogue.answers().random_word = lambda rng=None: "crane"
 
         board = new_game(client)
         guess(client, board["game_id"], "state")
@@ -259,3 +259,54 @@ class TestReadGame:
         game_id = new_game(client)["game_id"]
         client.app.state.store.delete(game_id)
         assert client.get(f"/api/games/{game_id}").status_code == 404
+
+
+class TestMultipleWordLengths:
+    """Two players on different lengths at the same time, against one server."""
+
+    def two_lengths(self, settings, tmp_path):
+        """A deployment with both a 4- and a 5-letter list installed."""
+        root = write_length(tmp_path / "multi", 5, ANSWERS, EXTRA_GUESSES)
+        write_length(root, 4, ["cats", "dogs"], ["rats", "cobs"])
+        return settings.model_copy(update={"word_lists_dir": root})
+
+    def test_a_game_can_be_asked_for_by_length(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        response = client.post("/api/games", json={"word_length": 4})
+        assert response.status_code == 201
+        assert response.json()["word_length"] == 4
+
+    def test_no_body_uses_the_default_length(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        assert client.post("/api/games").json()["word_length"] == 5
+
+    def test_two_lengths_are_playable_at_once(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        four = client.post("/api/games", json={"word_length": 4}).json()["game_id"]
+        five = client.post("/api/games", json={"word_length": 5}).json()["game_id"]
+
+        # Each game accepts only guesses of its own length, and neither
+        # disturbs the other.
+        assert client.post(f"/api/games/{four}/guesses", json={"guess": "rats"}).status_code == 200
+        assert client.post(f"/api/games/{five}/guesses", json={"guess": "cards"}).status_code == 200
+        assert client.post(f"/api/games/{four}/guesses", json={"guess": "cards"}).status_code == 400
+        assert client.post(f"/api/games/{five}/guesses", json={"guess": "rats"}).status_code == 400
+
+        assert client.get(f"/api/games/{four}").json()["word_length"] == 4
+        assert client.get(f"/api/games/{five}").json()["word_length"] == 5
+
+    def test_an_uninstalled_length_is_refused(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        response = client.post("/api/games", json={"word_length": 9})
+        assert response.status_code == 400
+        assert "4, 5" in response.json()["detail"]
+
+    def test_a_resumed_game_keeps_its_own_vocabulary(self, settings, tmp_path, make_client):
+        """The store rehydrates by the target's length, not a process-wide list."""
+        client = make_client(self.two_lengths(settings, tmp_path))
+        four = client.post("/api/games", json={"word_length": 4}).json()["game_id"]
+        client.post(f"/api/games/{four}/guesses", json={"guess": "rats"})
+
+        resumed = client.get(f"/api/games/{four}").json()
+        assert resumed["word_length"] == 4
+        assert [a["guess"] for a in resumed["attempts"]] == ["rats"]

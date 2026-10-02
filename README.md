@@ -134,9 +134,8 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
 | `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
 | `WORDLE_MAX_ATTEMPTS` | `5` | Guesses per game. |
-| `WORDLE_WORD_LENGTH` | `5` | Must match the word list. |
-| `WORDLE_ANSWERS_PATH` | shipped CSV | Override the answer list. |
-| `WORDLE_DICTIONARY_PATH` | shipped CSV | Override the allowed-guess list. |
+| `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
+| `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
 | `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
 | `WORDLE_DATA_DIR` | `data` | Where the game database lives. Mount a volume here. |
 | `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
@@ -221,16 +220,38 @@ the password protects is playing, not downloading an empty board.
 
 ## Word lists
 
-Two files in `backend/wordle/data/`, because they do different jobs.
+One directory per word length, named for the length, each holding two files
+because they do different jobs.
 
-| File | Size | Job |
-|---|---|---|
-| `answers.csv` | 830 | Where the answer comes from. Common words only. |
-| `dictionary.csv` | 14,855 | What a guess is allowed to be. |
+```
+backend/wordle/data/
+└── 5/
+    ├── answers.csv      830 words
+    └── dictionary.csv   14,855 words
+```
 
-One word per row under a `word` header. Every row must be a five-letter
-alphabetic word; a bad row stops startup with the offending line number rather
-than being quietly skipped.
+| File | Job |
+|---|---|
+| `answers.csv` | Where the answer comes from. Common words only. |
+| `dictionary.csv` | What a guess is allowed to be. |
+
+One word per row under a `word` header. Every row must be alphabetic and as
+long as the directory it sits in; a bad row stops startup with the offending
+line number rather than being quietly skipped. The directory name is the
+assertion, so a list filed under the wrong length fails on load.
+
+**Adding a length.** Create the directory, drop in the two files, and point
+`WORDLE_WORD_LISTS_DIR` at the root holding it. No code changes. Clients then
+ask for it per game:
+
+```
+POST /api/games   {"word_length": 6}
+```
+
+Only the shipped five-letter lists are installed, so that is the only length
+available out of the box. A request for a length with no lists is a 400 naming
+the lengths that do exist, and an omitted `word_length` uses
+`WORDLE_WORD_LENGTH`.
 
 **Why two.** Using one list for both jobs breaks whichever way you size it. A
 small list rejects `cards`, `boxes` and `trees` as "not a word", which is

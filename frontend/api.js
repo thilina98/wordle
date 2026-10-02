@@ -98,7 +98,12 @@ const WordleApi = (() => {
       }
     },
 
-    createGame: () => request('/api/games', { method: 'POST' }),
+    // No length means the server's default, which is the ordinary five.
+    createGame: (wordLength) =>
+      request('/api/games', {
+        method: 'POST',
+        body: wordLength === undefined ? undefined : { word_length: wordLength },
+      }),
     readGame: (id) => request(`/api/games/${encodeURIComponent(id)}`),
     submitGuess: (id, guess) =>
       request(`/api/games/${encodeURIComponent(id)}/guesses`, {

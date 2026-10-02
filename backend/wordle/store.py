@@ -124,6 +124,10 @@ class SqliteGameStore:
 
     Unlike the in-memory store this one keeps copies, not references, so a
     mutated game has to be handed back with `save`.
+
+    `vocabulary_for` maps a word length to the guesses legal at that length. A
+    row records its target, so the length to look up is the target's own: games
+    of different lengths share one table without the schema knowing.
     """
 
     _SCHEMA = """
@@ -140,13 +144,13 @@ class SqliteGameStore:
     def __init__(
         self,
         path: Path,
-        vocabulary: Collection[str],
+        vocabulary_for: Callable[[int], Collection[str]],
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         max_games: int = DEFAULT_MAX_GAMES,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._path = Path(path)
-        self._vocabulary = vocabulary
+        self._vocabulary_for = vocabulary_for
         self._ttl = ttl_seconds
         self._max_games = max_games
         # Wall clock, not monotonic: a monotonic value means nothing after a
@@ -187,7 +191,7 @@ class SqliteGameStore:
         ]
         return GameState(
             target=target,
-            vocabulary=self._vocabulary,
+            vocabulary=self._vocabulary_for(len(target)),
             max_attempts=max_attempts,
             attempts=attempts,
         )
@@ -220,9 +224,10 @@ class SqliteGameStore:
             try:
                 game = self._load(row[:3])
             except (ValueError, KeyError, json.JSONDecodeError):
-                # The row outlived the word list it was written against, so its
-                # target is no longer a legal word. Unplayable, not a server
-                # fault: drop it and let the caller see an ordinary 404.
+                # The row outlived the word lists it was written against: its
+                # length is no longer installed, or its target is no longer a
+                # legal word. Unplayable, not a server fault, so drop it and
+                # let the caller see an ordinary 404.
                 self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
                 return None
             self._conn.execute("UPDATE games SET touched_at = ? WHERE id = ?", (now, game_id))

@@ -18,27 +18,29 @@ EXTRA_GUESSES = ["recan", "cards", "boxes", "zoned"]
 
 
 def _write(path: Path, words: list[str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("word\n" + "\n".join(words) + "\n", encoding="utf-8")
     return path
 
 
-@pytest.fixture
-def answers_path(tmp_path) -> Path:
-    return _write(tmp_path / "answers.csv", ANSWERS)
+def write_length(root: Path, length: int, answers: list[str], extra_guesses: list[str]) -> Path:
+    """Install one length into a word list directory, the way deployments do."""
+    _write(root / str(length) / "answers.csv", answers)
+    _write(root / str(length) / "dictionary.csv", answers + extra_guesses)
+    return root
 
 
 @pytest.fixture
-def dictionary_path(tmp_path) -> Path:
-    return _write(tmp_path / "dictionary.csv", ANSWERS + EXTRA_GUESSES)
+def word_lists_dir(tmp_path) -> Path:
+    return write_length(tmp_path / "words", 5, ANSWERS, EXTRA_GUESSES)
 
 
 @pytest.fixture
-def settings(answers_path, dictionary_path, tmp_path) -> Settings:
+def settings(word_lists_dir, tmp_path) -> Settings:
     return Settings(
         password=PASSWORD,
         secret_key=SECRET_KEY,
-        answers_path=answers_path,
-        dictionary_path=dictionary_path,
+        word_lists_dir=word_lists_dir,
         allowed_origins=[ORIGIN],
         max_attempts=5,
         data_dir=tmp_path / "state",
@@ -104,7 +106,7 @@ def answer(app):
     """Pin the answer so game outcomes are deterministic."""
 
     def pin(word: str) -> str:
-        app.state.answers.random_word = lambda rng=None: word
+        app.state.catalogue.answers(len(word)).random_word = lambda rng=None: word
         return word
 
     return pin

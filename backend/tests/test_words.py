@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from wordle.words import WordListError, WordRepository
+from wordle.words import WordCatalogue, WordListError, WordRepository
 
 
 def write_csv(tmp_path, body: str):
@@ -55,6 +55,14 @@ class TestLoading:
         with pytest.raises(WordListError, match="not found"):
             WordRepository(tmp_path / "absent.csv")
 
+    def test_infers_word_length_from_the_list(self, tmp_path):
+        repo = WordRepository(write_csv(tmp_path, "word\ncats\ndogs\n"))
+        assert repo.word_length == 4
+
+    def test_configured_word_length_rejects_a_list_that_disagrees(self, tmp_path):
+        with pytest.raises(WordListError, match="5-letter"):
+            WordRepository(write_csv(tmp_path, "word\ncats\ndogs\n"), word_length=5)
+
     def test_honours_configured_word_length(self, tmp_path):
         repo = WordRepository(write_csv(tmp_path, "word\ncats\ndogs\n"), word_length=4)
         assert repo.vocabulary == frozenset({"cats", "dogs"})
@@ -80,51 +88,114 @@ class TestShippedLists:
     """The lists that actually ship must be usable, and consistent with each other."""
 
     def test_both_lists_load(self):
-        answers, dictionary = WordRepository.default_pair()
-        for repo in (answers, dictionary):
+        catalogue = WordCatalogue.packaged()
+        for repo in (catalogue.answers(5), catalogue.dictionary(5)):
             assert all(len(w) == 5 and w.isalpha() and w.islower() for w in repo.vocabulary)
 
     def test_answer_list_is_a_sensible_size(self):
-        answers, _ = WordRepository.default_pair()
+        answers = WordCatalogue.packaged().answers(5)
         assert len(answers) >= 200
 
     def test_dictionary_is_much_larger_than_the_answer_list(self):
         # A dictionary the size of the answer list would reject real words,
         # which is the whole reason the two are separate.
-        answers, dictionary = WordRepository.default_pair()
-        assert len(dictionary) > 10 * len(answers)
+        catalogue = WordCatalogue.packaged()
+        assert len(catalogue.dictionary(5)) > 10 * len(catalogue.answers(5))
 
     def test_every_answer_is_an_allowed_guess(self):
-        answers, dictionary = WordRepository.default_pair()
-        assert answers.vocabulary <= dictionary.vocabulary
+        catalogue = WordCatalogue.packaged()
+        assert catalogue.answers(5).vocabulary <= catalogue.dictionary(5).vocabulary
 
     def test_dictionary_holds_ordinary_words_the_answer_list_does_not(self):
-        answers, dictionary = WordRepository.default_pair()
+        dictionary = WordCatalogue.packaged().dictionary(5)
         for word in ("cards", "boxes", "trees", "email", "fjord"):
             assert word in dictionary, word
 
     def test_dictionary_rejects_letter_soup(self):
-        _, dictionary = WordRepository.default_pair()
+        dictionary = WordCatalogue.packaged().dictionary(5)
         for junk in ("zzzzz", "qwrtp", "aeiou"):
             assert junk not in dictionary, junk
 
-    def test_mismatched_pair_is_reported(self, tmp_path, monkeypatch):
-        # An answer outside the dictionary would be an unwinnable game.
-        answers = tmp_path / "answers.csv"
-        answers.write_text("word\ncrane\nzoned\n", encoding="utf-8")
-        dictionary = tmp_path / "dictionary.csv"
-        dictionary.write_text("word\ncrane\n", encoding="utf-8")
+    def test_five_is_the_default_length(self):
+        assert WordCatalogue.packaged().default_length == 5
 
-        real = WordRepository.packaged
-        monkeypatch.setattr(
-            WordRepository,
-            "packaged",
-            classmethod(
-                lambda cls, filename, word_length=5: cls(
-                    answers if "answers" in filename else dictionary, word_length=word_length
-                )
-            ),
+
+class TestWordCatalogue:
+    """The registry of lengths the deployment can serve."""
+
+    def install(self, root, length, answers, extra_guesses=()):
+        directory = root / str(length)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "answers.csv").write_text(
+            "word\n" + "\n".join(answers) + "\n", encoding="utf-8"
         )
+        (directory / "dictionary.csv").write_text(
+            "word\n" + "\n".join([*answers, *extra_guesses]) + "\n", encoding="utf-8"
+        )
+        return root
+
+    def test_loads_every_length_directory(self, tmp_path):
+        self.install(tmp_path, 4, ["cats", "dogs"])
+        self.install(tmp_path, 5, ["crane", "state"])
+        catalogue = WordCatalogue.from_directory(tmp_path)
+        assert catalogue.lengths == (4, 5)
+        assert catalogue.answers(4).vocabulary == frozenset({"cats", "dogs"})
+        assert catalogue.answers(5).vocabulary == frozenset({"crane", "state"})
+
+    def test_lengths_are_independent(self, tmp_path):
+        self.install(tmp_path, 4, ["cats"], extra_guesses=["rats"])
+        self.install(tmp_path, 6, ["clever"], extra_guesses=["batter"])
+        catalogue = WordCatalogue.from_directory(tmp_path)
+        assert "rats" in catalogue.dictionary(4)
+        assert "rats" not in catalogue.dictionary(6)
+
+    def test_defaults_to_five_when_installed(self, tmp_path):
+        self.install(tmp_path, 4, ["cats"])
+        self.install(tmp_path, 5, ["crane"])
+        self.install(tmp_path, 6, ["clever"])
+        assert WordCatalogue.from_directory(tmp_path).default_length == 5
+
+    def test_defaults_to_the_shortest_when_five_is_absent(self, tmp_path):
+        self.install(tmp_path, 6, ["clever"])
+        self.install(tmp_path, 7, ["cleaver"])
+        assert WordCatalogue.from_directory(tmp_path).default_length == 6
+
+    def test_an_explicit_default_must_be_installed(self, tmp_path):
+        self.install(tmp_path, 5, ["crane"])
+        with pytest.raises(WordListError, match="No 6-letter word list"):
+            WordCatalogue.from_directory(tmp_path, default_length=6)
+
+    def test_a_list_must_match_the_directory_it_is_filed_under(self, tmp_path):
+        self.install(tmp_path, 6, ["crane", "state"])
+        with pytest.raises(WordListError, match="6-letter"):
+            WordCatalogue.from_directory(tmp_path)
+
+    def test_ignores_directories_not_named_for_a_length(self, tmp_path):
+        self.install(tmp_path, 5, ["crane"])
+        (tmp_path / "notes").mkdir()
+        (tmp_path / "notes" / "README.md").write_text("ignore me", encoding="utf-8")
+        assert WordCatalogue.from_directory(tmp_path).lengths == (5,)
+
+    def test_a_directory_with_no_lengths_is_reported(self, tmp_path):
+        (tmp_path / "notes").mkdir()
+        with pytest.raises(WordListError, match="no word lists"):
+            WordCatalogue.from_directory(tmp_path)
+
+    def test_missing_directory_is_reported(self, tmp_path):
+        with pytest.raises(WordListError, match="not found"):
+            WordCatalogue.from_directory(tmp_path / "absent")
+
+    def test_an_unwinnable_answer_is_reported(self, tmp_path):
+        # An answer outside the dictionary would be an unwinnable game.
+        directory = tmp_path / "5"
+        directory.mkdir()
+        (directory / "answers.csv").write_text("word\ncrane\nzoned\n", encoding="utf-8")
+        (directory / "dictionary.csv").write_text("word\ncrane\n", encoding="utf-8")
         with pytest.raises(WordListError, match="zoned"):
-            WordRepository.default_pair()
-        monkeypatch.setattr(WordRepository, "packaged", real)
+            WordCatalogue.from_directory(tmp_path)
+
+    def test_unknown_length_names_what_is_installed(self, tmp_path):
+        self.install(tmp_path, 5, ["crane"])
+        catalogue = WordCatalogue.from_directory(tmp_path)
+        with pytest.raises(KeyError, match="Installed: 5"):
+            catalogue.answers(9)

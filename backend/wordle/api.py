@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from .config import Settings
 from .game import GameOverError, GameState, InvalidGuessError
-from .schemas import GameView, GuessRequest, LoginRequest, TokenResponse
+from .schemas import CreateGameRequest, GameView, GuessRequest, LoginRequest, TokenResponse
 from .security import (
     LoginThrottle,
     TokenError,
@@ -17,7 +17,7 @@ from .security import (
     verify_token,
 )
 from .store import GameStore
-from .words import WordRepository
+from .words import WordCatalogue
 
 router = APIRouter(prefix="/api", tags=["wordle"])
 
@@ -30,12 +30,8 @@ def _store(request: Request) -> GameStore:
     return request.app.state.store
 
 
-def _answers(request: Request) -> WordRepository:
-    return request.app.state.answers
-
-
-def _dictionary(request: Request) -> WordRepository:
-    return request.app.state.dictionary
+def _catalogue(request: Request) -> WordCatalogue:
+    return request.app.state.catalogue
 
 
 def _client_id(request: Request) -> str:
@@ -107,11 +103,24 @@ def check_session() -> dict[str, bool]:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_token)],
 )
-def create_game(request: Request) -> GameView:
-    """Start a game with a random answer."""
+def create_game(
+    request: Request,
+    payload: CreateGameRequest | None = None,
+) -> GameView:
+    """Start a game with a random answer, at the requested length.
+
+    The body is optional: no body means the server's default length.
+    """
+    catalogue = _catalogue(request)
+    length = payload.word_length if payload else None
+    if length is not None and length not in catalogue:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"No {length}-letter words available. Try: {catalogue.describe_lengths()}",
+        )
     game = GameState(
-        target=_answers(request).random_word(),
-        vocabulary=_dictionary(request).vocabulary,
+        target=catalogue.answers(length).random_word(),
+        vocabulary=catalogue.dictionary(length).vocabulary,
         max_attempts=_settings(request).max_attempts,
     )
     return GameView.of(_store(request).create(game), game)

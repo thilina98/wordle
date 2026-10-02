@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from .game import MAX_ATTEMPTS, WORD_LENGTH
+from .game import MAX_ATTEMPTS
 
 # Where the password and signing key live, one file each. Secrets are never
 # written down twice, so the same directory serves Docker and a run from
@@ -70,7 +70,14 @@ class Settings(BaseSettings):
     )
 
     # --- Game
-    word_length: int = Field(default=WORD_LENGTH, ge=2)
+    word_length: int | None = Field(
+        default=None,
+        ge=2,
+        description=(
+            "Length used when a game does not ask for one. None prefers 5, "
+            "falling back to the shortest list installed."
+        ),
+    )
     max_attempts: int = Field(default=MAX_ATTEMPTS, ge=1)
     # --- Storage
     store: Literal["memory", "sqlite"] = Field(
@@ -82,9 +89,12 @@ class Settings(BaseSettings):
         description="Writable directory for the game database. Mount a volume here.",
     )
 
-    answers_path: Path | None = Field(default=None, description="Override the shipped answer list")
-    dictionary_path: Path | None = Field(
-        default=None, description="Override the shipped list of allowed guesses"
+    word_lists_dir: Path | None = Field(
+        default=None,
+        description=(
+            "Directory of word lists, one subdirectory per length "
+            "(5/answers.csv, 5/dictionary.csv, ...). None uses the shipped lists."
+        ),
     )
 
     # --- Limits

@@ -40,7 +40,7 @@ def make_store(request, tmp_path):
             clock = kwargs.pop("clock")
             store = SqliteGameStore(
                 tmp_path / f"games{len(created)}.db",
-                vocabulary=VOCABULARY,
+                vocabulary_for=lambda length: VOCABULARY,
                 **({"clock": clock} if clock else {}),
                 **kwargs,
             )
@@ -143,7 +143,7 @@ class TestSqliteDurability:
     """The point of the sqlite store: a destroyed container loses nothing."""
 
     def _store(self, path, **kwargs):
-        return SqliteGameStore(path, vocabulary=VOCABULARY, **kwargs)
+        return SqliteGameStore(path, vocabulary_for=lambda length: VOCABULARY, **kwargs)
 
     def test_a_game_survives_the_process_that_made_it(self, tmp_path):
         path = tmp_path / "games.db"
@@ -214,12 +214,14 @@ class TestStaleVocabulary:
 
     def test_sqlite_drops_a_game_whose_target_left_the_vocabulary(self, tmp_path):
         path = tmp_path / "games.db"
-        store = SqliteGameStore(path, vocabulary=VOCABULARY)
+        store = SqliteGameStore(path, vocabulary_for=lambda length: VOCABULARY)
         game_id = store.create(a_game("crane"))
         store.close()
 
         # Same rows, a word list that no longer contains the target.
-        reopened = SqliteGameStore(path, vocabulary=frozenset({"state", "tasty"}))
+        reopened = SqliteGameStore(
+            path, vocabulary_for=lambda length: frozenset({"state", "tasty"})
+        )
         try:
             assert reopened.get(game_id) is None
             assert len(reopened) == 0
