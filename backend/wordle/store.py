@@ -1,8 +1,9 @@
 """Game persistence.
 
-In-memory today. Anything that needs a game goes through the GameStore
-protocol, so a Redis or database implementation drops in without touching the
-API layer.
+Two adapters behind the GameStore protocol: SQLite on a mounted volume, which
+is the default, and an in-memory store for tests and throwaway runs. Anything
+that needs a game goes through the protocol, so a third (Redis, say) drops in
+without touching the API layer.
 """
 
 from __future__ import annotations
@@ -56,6 +57,9 @@ class InMemoryGameStore:
     Both limits exist so abandoned games cannot grow without limit. Single
     process only: with more than one worker, a game is only visible to the
     worker that created it.
+
+    Locked, because the routes are sync `def` and FastAPI runs those in a
+    thread pool: two requests really do reach the dict at once.
     """
 
     def __init__(
@@ -67,43 +71,49 @@ class InMemoryGameStore:
         self._ttl = ttl_seconds
         self._max_games = max_games
         self._clock = clock
+        self._lock = threading.Lock()
         self._entries: OrderedDict[str, _Entry] = OrderedDict()
 
     def create(self, game: GameState) -> str:
-        self._purge_expired()
         game_id = secrets.token_urlsafe(16)
-        self._entries[game_id] = _Entry(game=game, touched_at=self._clock())
-        # Drop the least recently used until we are back within capacity.
-        while len(self._entries) > self._max_games:
-            self._entries.popitem(last=False)
+        with self._lock:
+            self._purge_expired()
+            self._entries[game_id] = _Entry(game=game, touched_at=self._clock())
+            # Drop the least recently used until we are back within capacity.
+            while len(self._entries) > self._max_games:
+                self._entries.popitem(last=False)
         return game_id
 
     def get(self, game_id: str) -> GameState | None:
-        entry = self._entries.get(game_id)
-        if entry is None:
-            return None
-        now = self._clock()
-        if now - entry.touched_at > self._ttl:
-            del self._entries[game_id]
-            return None
-        entry.touched_at = now
-        self._entries.move_to_end(game_id)
-        return entry.game
+        with self._lock:
+            entry = self._entries.get(game_id)
+            if entry is None:
+                return None
+            now = self._clock()
+            if now - entry.touched_at > self._ttl:
+                del self._entries[game_id]
+                return None
+            entry.touched_at = now
+            self._entries.move_to_end(game_id)
+            return entry.game
 
     def save(self, game_id: str, game: GameState) -> None:
         """No-op: `get` handed out the live object, so it is already current."""
 
     def delete(self, game_id: str) -> None:
-        self._entries.pop(game_id, None)
+        with self._lock:
+            self._entries.pop(game_id, None)
 
     def _purge_expired(self) -> None:
+        """Caller holds the lock."""
         cutoff = self._clock() - self._ttl
         expired = [gid for gid, e in self._entries.items() if e.touched_at < cutoff]
         for game_id in expired:
             del self._entries[game_id]
 
     def __len__(self) -> int:
-        return len(self._entries)
+        with self._lock:
+            return len(self._entries)
 
 
 class SqliteGameStore:
@@ -207,8 +217,16 @@ class SqliteGameStore:
             if now - row[3] > self._ttl:
                 self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
                 return None
+            try:
+                game = self._load(row[:3])
+            except (ValueError, KeyError, json.JSONDecodeError):
+                # The row outlived the word list it was written against, so its
+                # target is no longer a legal word. Unplayable, not a server
+                # fault: drop it and let the caller see an ordinary 404.
+                self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
+                return None
             self._conn.execute("UPDATE games SET touched_at = ? WHERE id = ?", (now, game_id))
-            return self._load(row[:3])
+            return game
 
     def save(self, game_id: str, game: GameState) -> None:
         """Write a mutated game back. Silently ignores an unknown id."""

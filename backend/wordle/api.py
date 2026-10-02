@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
+from .config import Settings
 from .game import GameOverError, GameState, InvalidGuessError
 from .schemas import GameView, GuessRequest, LoginRequest, TokenResponse
 from .security import (
@@ -21,7 +22,7 @@ from .words import WordRepository
 router = APIRouter(prefix="/api", tags=["wordle"])
 
 
-def _settings(request: Request):
+def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 

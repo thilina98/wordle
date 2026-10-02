@@ -207,3 +207,21 @@ class TestSqliteDurability:
         store = self._store(tmp_path / "games.db")
         store.close()
         store.close()
+
+
+class TestStaleVocabulary:
+    """A stored game can outlive the word list it was written against."""
+
+    def test_sqlite_drops_a_game_whose_target_left_the_vocabulary(self, tmp_path):
+        path = tmp_path / "games.db"
+        store = SqliteGameStore(path, vocabulary=VOCABULARY)
+        game_id = store.create(a_game("crane"))
+        store.close()
+
+        # Same rows, a word list that no longer contains the target.
+        reopened = SqliteGameStore(path, vocabulary=frozenset({"state", "tasty"}))
+        try:
+            assert reopened.get(game_id) is None
+            assert len(reopened) == 0
+        finally:
+            reopened.close()
