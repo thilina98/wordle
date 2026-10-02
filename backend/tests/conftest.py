@@ -42,7 +42,7 @@ def settings(word_lists_dir, tmp_path) -> Settings:
         secret_key=SECRET_KEY,
         word_lists_dir=word_lists_dir,
         allowed_origins=[ORIGIN],
-        max_attempts=5,
+        # max_attempts left unset: games derive it from their word length.
         data_dir=tmp_path / "state",
     )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from .game import Colour, GameState
+from .game import MIN_ATTEMPTS, Colour, GameState
 
 
 class LoginRequest(BaseModel):
@@ -21,6 +21,14 @@ class CreateGameRequest(BaseModel):
 
     word_length: int | None = Field(
         default=None, ge=2, le=32, description="None takes the server's default length."
+    )
+    max_attempts: int | None = Field(
+        default=None,
+        ge=MIN_ATTEMPTS,
+        description=(
+            "None derives it from the word length. The upper bound depends on "
+            "that length, so the game enforces it, not this schema."
+        ),
     )
 
 

@@ -310,3 +310,83 @@ class TestMultipleWordLengths:
         resumed = client.get(f"/api/games/{four}").json()
         assert resumed["word_length"] == 4
         assert [a["guess"] for a in resumed["attempts"]] == ["rats"]
+
+
+class TestAttemptCount:
+    """A game can be asked for with its own attempt count."""
+
+    def test_a_game_can_be_asked_for_by_attempt_count(self, client):
+        response = client.post("/api/games", json={"max_attempts": 3})
+        assert response.status_code == 201
+        body = response.json()
+        assert body["max_attempts"] == 3
+        assert body["attempts_remaining"] == 3
+
+    def test_no_body_derives_the_count_from_the_word(self, client):
+        body = client.post("/api/games").json()
+        assert body["max_attempts"] == body["word_length"] == 5
+
+    def test_a_configured_count_overrides_the_derived_one(self, settings, make_client):
+        client = make_client(settings.model_copy(update={"max_attempts": 3}))
+        assert client.post("/api/games").json()["max_attempts"] == 3
+
+    def test_the_requested_count_is_what_actually_ends_the_game(self, client, answer):
+        answer("crane")
+        game_id = client.post("/api/games", json={"max_attempts": 2}).json()["game_id"]
+        for _ in range(2):
+            body = client.post(f"/api/games/{game_id}/guesses", json={"guess": "state"}).json()
+        assert body["is_over"] is True
+        assert body["is_won"] is False
+        assert body["answer"] == "crane"
+
+    def test_an_unwinnable_count_is_refused(self, client):
+        # No client gets to hand itself infinite guesses. The upper bound
+        # depends on the word, so the game refuses it (400) rather than the
+        # schema (422).
+        assert client.post("/api/games", json={"max_attempts": 500}).status_code == 400
+        assert client.post("/api/games", json={"max_attempts": 0}).status_code == 422
+
+    def two_lengths(self, settings, tmp_path):
+        root = write_length(tmp_path / "multi", 5, ANSWERS, EXTRA_GUESSES)
+        write_length(root, 4, ["cats", "dogs"], ["rats"])
+        return settings.model_copy(update={"word_lists_dir": root})
+
+    def test_the_default_count_follows_the_requested_length(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        for length in (4, 5):
+            body = client.post("/api/games", json={"word_length": length}).json()
+            assert (body["word_length"], body["max_attempts"]) == (length, length)
+
+    def test_the_limit_follows_the_requested_length(self, settings, tmp_path, make_client):
+        client = make_client(self.two_lengths(settings, tmp_path))
+        # Six attempts is the ceiling at four letters and ordinary at five.
+        assert (
+            client.post("/api/games", json={"word_length": 4, "max_attempts": 6}).status_code == 201
+        )
+        assert (
+            client.post("/api/games", json={"word_length": 5, "max_attempts": 6}).status_code == 201
+        )
+
+        refused = client.post("/api/games", json={"word_length": 4, "max_attempts": 7})
+        assert refused.status_code == 400
+        assert "4-letter" in refused.json()["detail"]
+
+    def test_the_count_survives_a_resume(self, client):
+        game_id = client.post("/api/games", json={"max_attempts": 3}).json()["game_id"]
+        assert client.get(f"/api/games/{game_id}").json()["max_attempts"] == 3
+
+
+class TestDomainLimitsReachTheClient:
+    """The game's own limits decide, and the route answers for them."""
+
+    def test_an_out_of_range_count_never_becomes_a_server_error(self, settings, make_client):
+        # The schema bounds this field too, so the route's guard is belt and
+        # braces -- but a rejected count must never read as a 5xx.
+        client = make_client(settings)
+        for count in (0, -1, 500):
+            status = client.post("/api/games", json={"max_attempts": count}).status_code
+            assert status < 500, count
+
+    def test_zero_is_refused_rather_than_silently_defaulted(self, settings, make_client):
+        client = make_client(settings)
+        assert client.post("/api/games", json={"max_attempts": 0}).status_code == 422

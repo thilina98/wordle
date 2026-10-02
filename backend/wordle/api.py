@@ -107,9 +107,10 @@ def create_game(
     request: Request,
     payload: CreateGameRequest | None = None,
 ) -> GameView:
-    """Start a game with a random answer, at the requested length.
+    """Start a game with a random answer, at the requested shape.
 
-    The body is optional: no body means the server's default length.
+    The body is optional, and so is every field in it: anything left out falls
+    back to the server's default.
     """
     catalogue = _catalogue(request)
     length = payload.word_length if payload else None
@@ -118,11 +119,23 @@ def create_game(
             status.HTTP_400_BAD_REQUEST,
             f"No {length}-letter words available. Try: {catalogue.describe_lengths()}",
         )
-    game = GameState(
-        target=catalogue.answers(length).random_word(),
-        vocabulary=catalogue.dictionary(length).vocabulary,
-        max_attempts=_settings(request).max_attempts,
-    )
+    # `is None`, not `or`: a falsy count must still be the domain's to refuse,
+    # not silently replaced by the default. None all the way down means the
+    # game derives the count from its own word length.
+    requested = payload.max_attempts if payload else None
+    attempts = _settings(request).max_attempts if requested is None else requested
+
+    try:
+        game = GameState(
+            target=catalogue.answers(length).random_word(),
+            vocabulary=catalogue.dictionary(length).vocabulary,
+            max_attempts=attempts,
+        )
+    except ValueError as exc:
+        # The schema bounds the same field, so this is belt and braces. It
+        # exists because the domain's limits are the real ones: the route
+        # should answer for them rather than assume the edge caught everything.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return GameView.of(_store(request).create(game), game)
 
 

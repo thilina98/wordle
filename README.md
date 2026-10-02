@@ -133,7 +133,7 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
 | `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
-| `WORDLE_MAX_ATTEMPTS` | `5` | Guesses per game. |
+| `WORDLE_MAX_ATTEMPTS` | derived | Fixed attempt count. Unset gives one guess per letter. |
 | `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
 | `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
@@ -252,6 +252,42 @@ Only the shipped five-letter lists are installed, so that is the only length
 available out of the box. A request for a length with no lists is a 400 naming
 the lengths that do exist, and an omitted `word_length` uses
 `WORDLE_WORD_LENGTH`.
+
+## Game shape
+
+A new game takes its shape from the request, falling back to the server's
+defaults for anything left out.
+
+```
+POST /api/games   {"word_length": 6, "max_attempts": 7}
+POST /api/games   {}
+```
+
+| Field | Default | Bound by |
+|---|---|---|
+| `word_length` | `WORDLE_WORD_LENGTH` | The word lists installed. |
+| `max_attempts` | One guess per letter | 2 to the length plus two. |
+
+**Attempts follow the word.** A five-letter game gets five guesses and allows
+between two and seven; a seven-letter game gets seven and allows between two
+and nine. A longer word is a harder word, so a flat number would be generous at
+four letters and stingy at seven. Two is the floor everywhere, because a single
+guess gives the player no feedback to act on.
+
+```
+POST {"word_length": 4}                       -> 4 letters, 4 attempts
+POST {"word_length": 7}                       -> 7 letters, 7 attempts
+POST {"word_length": 4, "max_attempts": 7}    -> 400, a 4-letter game allows at most 6
+```
+
+The rule lives in `GameState`, which already knows both the word and the count,
+and is enforced wherever a game is built rather than only at the HTTP edge. The
+request schema deliberately does not carry the upper bound, because the bound
+depends on the length and only the game knows that.
+
+`WORDLE_MAX_ATTEMPTS` pins a fixed count for every game instead. It is checked
+at startup against every installed length, so a value that is illegal for the
+shortest word stops the server rather than failing one request at a time.
 
 **Why two.** Using one list for both jobs breaks whichever way you size it. A
 small list rejects `cards`, `boxes` and `trees` as "not a word", which is

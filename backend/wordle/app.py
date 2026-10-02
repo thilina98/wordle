@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api import router as api_router
 from .config import Settings, get_settings
+from .game import MIN_ATTEMPTS, attempt_limit, default_attempts
 from .security import LoginThrottle
 from .store import GameStore, InMemoryGameStore, SqliteGameStore
 from .words import WordCatalogue, WordListError
@@ -41,6 +42,27 @@ def _catalogue(settings: Settings) -> WordCatalogue:
         raise
 
 
+def _check_attempts_fit_every_length(settings: Settings, catalogue: WordCatalogue) -> None:
+    """Every installed length must yield a playable game.
+
+    Both mistakes below otherwise surface as every game of one length failing,
+    one request at a time, rather than as a server that will not start.
+    """
+    for length in catalogue.lengths:
+        if default_attempts(length) < MIN_ATTEMPTS:
+            raise ValueError(
+                f"The installed {length}-letter list cannot be played: it derives "
+                f"{default_attempts(length)} attempts and a game needs at least "
+                f"{MIN_ATTEMPTS}. Remove the {length}/ directory."
+            )
+        if settings.max_attempts is not None and settings.max_attempts > attempt_limit(length):
+            raise ValueError(
+                f"WORDLE_MAX_ATTEMPTS={settings.max_attempts} exceeds the limit of "
+                f"{attempt_limit(length)} for the installed {length}-letter list. "
+                f"Lower it, or unset it to give every game one guess per letter."
+            )
+
+
 def _game_store(settings: Settings, catalogue: WordCatalogue) -> GameStore:
     """Games on disk by default, so a container rebuild does not end them."""
     if settings.store == "memory":
@@ -59,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
 
     catalogue = _catalogue(settings)
+    _check_attempts_fit_every_length(settings, catalogue)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

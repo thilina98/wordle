@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from wordle.app import create_app
 from wordle.config import Settings
 
 
@@ -98,3 +99,35 @@ class TestAllowedOrigins:
             monkeypatch.delenv(key, raising=False)
         settings = Settings(_env_file=env)
         assert settings.allowed_origins == ["http://a.test", "http://b.test"]
+
+
+class TestAttemptsFitTheInstalledLengths:
+    """A fixed attempt count must be legal at every length, checked at startup."""
+
+    def test_a_count_beyond_the_shortest_length_stops_startup(self, settings, tmp_path):
+        from tests.conftest import write_length
+
+        root = write_length(tmp_path / "multi", 4, ["cats", "dogs"], ["rats"])
+        # Seven is legal at five letters but two over the limit at four.
+        bad = settings.model_copy(update={"word_lists_dir": root, "max_attempts": 7})
+        with pytest.raises(ValueError, match="exceeds the limit"):
+            create_app(bad)
+
+    def test_a_count_within_every_limit_is_accepted(self, settings, tmp_path):
+        from tests.conftest import write_length
+
+        root = write_length(tmp_path / "multi", 4, ["cats", "dogs"], ["rats"])
+        good = settings.model_copy(update={"word_lists_dir": root, "max_attempts": 4})
+        app = create_app(good)
+        try:
+            assert app.state.settings.max_attempts == 4
+        finally:
+            app.state.store.close()
+
+    def test_a_length_too_short_to_play_stops_startup(self, settings, tmp_path):
+        from tests.conftest import write_length
+
+        # A one-letter game would derive one attempt, below the floor of two.
+        root = write_length(tmp_path / "tiny", 1, ["a", "i"], ["o"])
+        with pytest.raises(ValueError, match="cannot be played"):
+            create_app(settings.model_copy(update={"word_lists_dir": root}))

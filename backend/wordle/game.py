@@ -8,7 +8,16 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 WORD_LENGTH = 5
-MAX_ATTEMPTS = 5
+
+# Attempts are not configured, they are derived: a game gets one guess per
+# letter, and may be made easier by at most two more. A longer word is a harder
+# word, so the allowance travels with the length instead of being a flat number
+# that is generous for four letters and stingy for seven.
+#
+# Two is the floor because a single guess is not a game: with no feedback to
+# act on, the player can only be lucky.
+MIN_ATTEMPTS = 2
+ATTEMPT_ALLOWANCE = 2
 
 
 class Colour(StrEnum):
@@ -66,6 +75,16 @@ def evaluate_guess(target: str, guess: str) -> list[Colour]:
     return colours
 
 
+def default_attempts(word_length: int) -> int:
+    """One guess per letter."""
+    return word_length
+
+
+def attempt_limit(word_length: int) -> int:
+    """The most guesses a word of this length may be played with."""
+    return default_attempts(word_length) + ATTEMPT_ALLOWANCE
+
+
 @dataclass(frozen=True, slots=True)
 class Attempt:
     """One scored guess."""
@@ -85,17 +104,34 @@ class GameState:
 
     target: str
     vocabulary: Collection[str]
-    max_attempts: int = MAX_ATTEMPTS
+    #: None means the default for this word's length: one guess per letter.
+    max_attempts: int | None = None
     attempts: list[Attempt] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.target = self.target.lower()
         if self.target not in self.vocabulary:
             raise ValueError(f"target {self.target!r} is not a valid guess")
+        if self.max_attempts is None:
+            self.max_attempts = default_attempts(self.word_length)
+        limit = attempt_limit(self.word_length)
+        if not MIN_ATTEMPTS <= self.max_attempts <= limit:
+            # Enforced here rather than at the HTTP edge, so no caller and no
+            # stored row can produce a game nobody could lose. The limit tracks
+            # the word, which is why it cannot live in configuration.
+            raise ValueError(
+                f"a {self.word_length}-letter game allows between {MIN_ATTEMPTS} and "
+                f"{limit} attempts, got {self.max_attempts}"
+            )
 
     @property
     def word_length(self) -> int:
         return len(self.target)
+
+    @property
+    def attempt_limit(self) -> int:
+        """The most attempts this game could have been given."""
+        return attempt_limit(self.word_length)
 
     @property
     def is_won(self) -> bool:

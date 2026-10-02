@@ -2,7 +2,16 @@
 
 import pytest
 
-from wordle.game import Colour, GameOverError, GameState, InvalidGuessError, evaluate_guess
+from wordle.game import (
+    MIN_ATTEMPTS,
+    Colour,
+    GameOverError,
+    GameState,
+    InvalidGuessError,
+    attempt_limit,
+    default_attempts,
+    evaluate_guess,
+)
 
 # A guess may be any of these; only some are answers. Deliberately includes
 # words a small answer list would not hold, which is the point of the split.
@@ -113,8 +122,9 @@ class TestGameState:
             self._game().guess("cr4ne")
 
     def test_rejects_guess_after_game_over(self):
-        game = self._game(max_attempts=1)
-        game.guess("caner")
+        game = self._game(max_attempts=MIN_ATTEMPTS)
+        for _ in range(MIN_ATTEMPTS):
+            game.guess("caner")
         with pytest.raises(GameOverError):
             game.guess("crane")
 
@@ -168,3 +178,49 @@ class TestGameState:
         game.guess("tasty")
         game.guess("state")
         assert game.letter_states["t"] == G
+
+
+class TestAttemptsFollowTheWord:
+    """Attempts are derived from the word, not configured independently."""
+
+    def a_game(self, target="crane", max_attempts=None, vocabulary=None):
+        return GameState(
+            target=target,
+            vocabulary=vocabulary or {target},
+            max_attempts=max_attempts,
+        )
+
+    def test_the_default_is_one_guess_per_letter(self):
+        for target in ("cats", "crane", "clever", "cleaver"):
+            assert self.a_game(target).max_attempts == len(target)
+
+    def test_the_limit_is_two_more_than_the_length(self):
+        for target in ("cats", "crane", "cleaver"):
+            assert self.a_game(target).attempt_limit == len(target) + 2
+
+    def test_the_limit_travels_with_the_length(self):
+        # Seven attempts is generous for a four-letter word and legal for a six.
+        with pytest.raises(ValueError, match="4-letter game"):
+            self.a_game("cats", max_attempts=7)
+        assert self.a_game("clever", max_attempts=7).max_attempts == 7
+
+    def test_accepts_the_whole_allowed_range(self):
+        for count in range(MIN_ATTEMPTS, attempt_limit(5) + 1):
+            assert self.a_game("crane", max_attempts=count).max_attempts == count
+
+    def test_rejects_too_few(self):
+        with pytest.raises(ValueError, match="attempts"):
+            self.a_game("crane", max_attempts=MIN_ATTEMPTS - 1)
+
+    def test_rejects_too_many(self):
+        with pytest.raises(ValueError, match="attempts"):
+            self.a_game("crane", max_attempts=attempt_limit(5) + 1)
+
+    def test_the_rule_is_stated_once(self):
+        assert default_attempts(6) == 6
+        assert attempt_limit(6) == 8
+
+    def test_attempts_drive_when_the_game_ends(self):
+        game = self.a_game("crane", max_attempts=2)
+        game.guess("crane")
+        assert game.is_over and game.is_won

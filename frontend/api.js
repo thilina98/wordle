@@ -98,12 +98,17 @@ const WordleApi = (() => {
       }
     },
 
-    // No length means the server's default, which is the ordinary five.
-    createGame: (wordLength) =>
-      request('/api/games', {
+    // Anything omitted falls back to the server's default: the ordinary
+    // five-letter board with five attempts.
+    createGame: ({ wordLength, maxAttempts } = {}) => {
+      const body = {};
+      if (wordLength !== undefined) body.word_length = wordLength;
+      if (maxAttempts !== undefined) body.max_attempts = maxAttempts;
+      return request('/api/games', {
         method: 'POST',
-        body: wordLength === undefined ? undefined : { word_length: wordLength },
-      }),
+        body: Object.keys(body).length ? body : undefined,
+      });
+    },
     readGame: (id) => request(`/api/games/${encodeURIComponent(id)}`),
     submitGuess: (id, guess) =>
       request(`/api/games/${encodeURIComponent(id)}/guesses`, {
