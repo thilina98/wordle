@@ -182,11 +182,11 @@ class TestGuessing:
         assert result["answer"] == "crane"
 
     def test_running_out_reveals_the_answer(self, settings, make_client):
-        settings.max_attempts = 2
         client = make_client(settings)
         client.app.state.catalogue.answers().random_word = lambda rng=None: "crane"
 
-        board = new_game(client)
+        # Two attempts, asked for, so the board runs out in two guesses.
+        board = client.post("/api/games", json={"max_attempts": 2}).json()
         guess(client, board["game_id"], "state")
         result = guess(client, board["game_id"], "tasty").json()
         assert result["is_over"] is True
@@ -325,10 +325,6 @@ class TestAttemptCount:
     def test_no_body_derives_the_count_from_the_word(self, client):
         body = client.post("/api/games").json()
         assert body["max_attempts"] == body["word_length"] == 5
-
-    def test_a_configured_count_overrides_the_derived_one(self, settings, make_client):
-        client = make_client(settings.model_copy(update={"max_attempts": 3}))
-        assert client.post("/api/games").json()["max_attempts"] == 3
 
     def test_the_requested_count_is_what_actually_ends_the_game(self, client, answer):
         answer("crane")

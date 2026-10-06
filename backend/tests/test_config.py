@@ -47,10 +47,10 @@ def test_refuses_a_short_secret_key(no_secrets):
 def test_reads_values_from_the_environment(monkeypatch):
     monkeypatch.setenv("WORDLE_PASSWORD", "hunter2")
     monkeypatch.setenv("WORDLE_SECRET_KEY", "y" * 32)
-    monkeypatch.setenv("WORDLE_MAX_ATTEMPTS", "6")
+    monkeypatch.setenv("WORDLE_WORD_LENGTH", "6")
     settings = Settings(_env_file=None)
     assert settings.password == "hunter2"
-    assert settings.max_attempts == 6
+    assert settings.word_length == 6
 
 
 class TestAllowedOrigins:
@@ -101,28 +101,8 @@ class TestAllowedOrigins:
         assert settings.allowed_origins == ["http://a.test", "http://b.test"]
 
 
-class TestAttemptsFitTheInstalledLengths:
-    """A fixed attempt count must be legal at every length, checked at startup."""
-
-    def test_a_count_beyond_the_shortest_length_stops_startup(self, settings, tmp_path):
-        from tests.conftest import write_length
-
-        root = write_length(tmp_path / "multi", 4, ["cats", "dogs"], ["rats"])
-        # Seven is legal at five letters but two over the limit at four.
-        bad = settings.model_copy(update={"word_lists_dir": root, "max_attempts": 7})
-        with pytest.raises(ValueError, match="exceeds the limit"):
-            create_app(bad)
-
-    def test_a_count_within_every_limit_is_accepted(self, settings, tmp_path):
-        from tests.conftest import write_length
-
-        root = write_length(tmp_path / "multi", 4, ["cats", "dogs"], ["rats"])
-        good = settings.model_copy(update={"word_lists_dir": root, "max_attempts": 4})
-        app = create_app(good)
-        try:
-            assert app.state.settings.max_attempts == 4
-        finally:
-            app.state.store.close()
+class TestEveryLengthIsPlayable:
+    """An installed length that could never yield a game stops startup."""
 
     def test_a_length_too_short_to_play_stops_startup(self, settings, tmp_path):
         from tests.conftest import write_length
@@ -131,3 +111,13 @@ class TestAttemptsFitTheInstalledLengths:
         root = write_length(tmp_path / "tiny", 1, ["a", "i"], ["o"])
         with pytest.raises(ValueError, match="cannot be played"):
             create_app(settings.model_copy(update={"word_lists_dir": root}))
+
+    def test_an_ordinary_length_starts(self, settings, tmp_path):
+        from tests.conftest import write_length
+
+        root = write_length(tmp_path / "multi", 4, ["cats", "dogs"], ["rats"])
+        app = create_app(settings.model_copy(update={"word_lists_dir": root}))
+        try:
+            assert app.state.catalogue.lengths == (4,)
+        finally:
+            app.state.store.close()

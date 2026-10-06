@@ -119,17 +119,12 @@ def create_game(
             status.HTTP_400_BAD_REQUEST,
             f"No {length}-letter words available. Try: {catalogue.describe_lengths()}",
         )
-    # `is None`, not `or`: a falsy count must still be the domain's to refuse,
-    # not silently replaced by the default. None all the way down means the
-    # game derives the count from its own word length.
-    requested = payload.max_attempts if payload else None
-    attempts = _settings(request).max_attempts if requested is None else requested
-
+    # None all the way down: the game derives the count from its own word.
     try:
         game = GameState(
             target=catalogue.answers(length).random_word(),
             vocabulary=catalogue.dictionary(length).vocabulary,
-            max_attempts=attempts,
+            max_attempts=payload.max_attempts if payload else None,
         )
     except ValueError as exc:
         # The schema bounds the same field, so this is belt and braces. It

@@ -133,7 +133,6 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
 | `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
-| `WORDLE_MAX_ATTEMPTS` | derived | Fixed attempt count. Unset gives one guess per letter. |
 | `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
 | `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
@@ -285,9 +284,9 @@ and is enforced wherever a game is built rather than only at the HTTP edge. The
 request schema deliberately does not carry the upper bound, because the bound
 depends on the length and only the game knows that.
 
-`WORDLE_MAX_ATTEMPTS` pins a fixed count for every game instead. It is checked
-at startup against every installed length, so a value that is illegal for the
-shortest word stops the server rather than failing one request at a time.
+There is no setting for the attempt count. The derived default adapts to the
+word where a fixed number could not, and a client that wants something else
+asks for it per game.
 
 **Why two.** Using one list for both jobs breaks whichever way you size it. A
 small list rejects `cards`, `boxes` and `trees` as "not a word", which is

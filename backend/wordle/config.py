@@ -15,8 +15,6 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from .game import MIN_ATTEMPTS
-
 # Where the password and signing key live, one file each. Secrets are never
 # written down twice, so the same directory serves Docker and a run from
 # source; only its location differs.
@@ -76,14 +74,6 @@ class Settings(BaseSettings):
         description=(
             "Length used when a game does not ask for one. None prefers 5, "
             "falling back to the shortest list installed."
-        ),
-    )
-    max_attempts: int | None = Field(
-        default=None,
-        ge=MIN_ATTEMPTS,
-        description=(
-            "Fixed attempt count for games that do not ask for one. None "
-            "derives it from the word: one guess per letter."
         ),
     )
     # --- Storage
