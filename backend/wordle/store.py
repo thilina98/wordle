@@ -136,10 +136,18 @@ class SqliteGameStore:
             target       TEXT    NOT NULL,
             max_attempts INTEGER NOT NULL,
             attempts     TEXT    NOT NULL,
-            touched_at   REAL    NOT NULL
+            touched_at   REAL    NOT NULL,
+            started_at   REAL,
+            finished_at  REAL
         );
         CREATE INDEX IF NOT EXISTS games_touched_at ON games (touched_at);
     """
+
+    #: Columns added after the table shipped. A database written by an older
+    #: build has the table already, so CREATE TABLE IF NOT EXISTS skips it and
+    #: these have to be put on by hand. Games in flight keep playing; they just
+    #: score as untimed.
+    _ADDED_COLUMNS = (("started_at", "REAL"), ("finished_at", "REAL"))
 
     def __init__(
         self,
@@ -168,6 +176,13 @@ class SqliteGameStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(self._SCHEMA)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        existing = {row[1] for row in self._conn.execute("PRAGMA table_info(games)")}
+        for name, sql_type in self._ADDED_COLUMNS:
+            if name not in existing:
+                self._conn.execute(f"ALTER TABLE games ADD COLUMN {name} {sql_type}")
 
     def close(self) -> None:
         """Release the connection. Safe to call twice."""
@@ -184,7 +199,7 @@ class SqliteGameStore:
         )
 
     def _load(self, row: sqlite3.Row | tuple) -> GameState:
-        target, max_attempts, attempts_json = row
+        target, max_attempts, attempts_json, started_at, finished_at = row
         attempts = [
             Attempt(guess=a["guess"], colours=[Colour(c) for c in a["colours"]])
             for a in json.loads(attempts_json)
@@ -194,6 +209,8 @@ class SqliteGameStore:
             vocabulary=self._vocabulary_for(len(target)),
             max_attempts=max_attempts,
             attempts=attempts,
+            started_at=started_at,
+            finished_at=finished_at,
         )
 
     def create(self, game: GameState) -> str:
@@ -202,9 +219,18 @@ class SqliteGameStore:
         with self._lock:
             self._purge(now)
             self._conn.execute(
-                "INSERT INTO games (id, target, max_attempts, attempts, touched_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (game_id, game.target, game.max_attempts, self._dump(game), now),
+                "INSERT INTO games"
+                " (id, target, max_attempts, attempts, touched_at, started_at, finished_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    game_id,
+                    game.target,
+                    game.max_attempts,
+                    self._dump(game),
+                    now,
+                    game.started_at,
+                    game.finished_at,
+                ),
             )
             self._enforce_capacity()
         return game_id
@@ -213,16 +239,17 @@ class SqliteGameStore:
         now = self._clock()
         with self._lock:
             row = self._conn.execute(
-                "SELECT target, max_attempts, attempts, touched_at FROM games WHERE id = ?",
+                "SELECT target, max_attempts, attempts, started_at, finished_at, touched_at"
+                " FROM games WHERE id = ?",
                 (game_id,),
             ).fetchone()
             if row is None:
                 return None
-            if now - row[3] > self._ttl:
+            if now - row[5] > self._ttl:
                 self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
                 return None
             try:
-                game = self._load(row[:3])
+                game = self._load(row[:5])
             except (ValueError, KeyError, json.JSONDecodeError):
                 # The row outlived the word lists it was written against: its
                 # length is no longer installed, or its target is no longer a
@@ -237,8 +264,9 @@ class SqliteGameStore:
         """Write a mutated game back. Silently ignores an unknown id."""
         with self._lock:
             self._conn.execute(
-                "UPDATE games SET attempts = ?, touched_at = ? WHERE id = ?",
-                (self._dump(game), self._clock(), game_id),
+                "UPDATE games SET attempts = ?, touched_at = ?, started_at = ?, finished_at = ?"
+                " WHERE id = ?",
+                (self._dump(game), self._clock(), game.started_at, game.finished_at, game_id),
             )
 
     def delete(self, game_id: str) -> None:

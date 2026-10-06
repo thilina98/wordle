@@ -167,6 +167,7 @@ JSON everywhere. Every route except `/healthz` and `/api/login` needs
 | `GET` | `/api/session` | Is my stored token still good? |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
+| `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |
 | `POST` | `/api/games/{id}/guesses` | Score a guess. |
 
 ```bash
@@ -176,7 +177,7 @@ TOKEN=$(curl -s localhost:8000/api/login \
 curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN"
 ```
 
-A board looks like this. `answer` stays `null` until the game ends:
+A board looks like this. `answer` and `score` stay `null` until the game ends:
 
 ```json
 {
@@ -188,7 +189,8 @@ A board looks like this. `answer` stays `null` until the game ends:
   "is_over": false,
   "is_won": false,
   "letter_states": {"s": "miss", "t": "miss", "a": "hit", "e": "hit"},
-  "answer": null
+  "answer": null,
+  "score": null
 }
 ```
 
@@ -251,6 +253,57 @@ Only the shipped five-letter lists are installed, so that is the only length
 available out of the box. A request for a length with no lists is a 400 naming
 the lengths that do exist, and an omitted `word_length` uses
 `WORDLE_WORD_LENGTH`.
+
+## Scoring
+
+A finished game is worth a score. Normal mode — one attempt per letter — is
+out of 10. Playing with fewer attempts is harder, and scores more. The score
+arrives on the board itself, in the `score` field, so there is no second
+request to make.
+
+```json
+{
+  "word_length": 5, "max_attempts": 4, "is_won": true, "winning_attempt": 3,
+  "game_time_seconds": 120.0, "base": 58.48, "time_bonus": 7.02,
+  "multiplier": 1.25, "raw_score": 81.87, "score": 6.82
+}
+```
+
+Only `score` is meant for a player. The rest is the working, kept so a score
+can be explained without the page reimplementing the arithmetic.
+
+Three things decide it:
+
+**How few guesses it took.** A win on attempt 2 is worth the full 100 base
+points; a win on attempt `word_length` keeps a fifth of that, and the attempts
+in between decay smoothly from one to the other. Attempt 1 scores nothing — the
+player had no feedback to act on, so it was luck, not play. It still counts as
+a win everywhere else.
+
+**How fast.** Up to 20% of the base on top, falling linearly to zero over a
+window of 60 seconds per letter. The cap is deliberately small: solving it in
+fewer guesses always beats solving it faster. Past the window the bonus is
+zero, never negative.
+
+**How much help the game gave.** Normal mode is one attempt per letter. Each
+attempt fewer multiplies the whole score by 1.25, each attempt more divides by
+it. This is the only thing `max_attempts` affects — the base and the time
+window are measured against the word, not against the allowance.
+
+So 10.00 is the best normal-mode game, at every word length. One attempt fewer
+tops out at 12.50, one attempt more at 8.00. The score is not capped at 10.
+
+The clock runs from the player's first keystroke, not from `POST /api/games`: a
+board can sit untouched while its player reads the rules, and that is not time
+spent playing. The client marks the moment with `POST /api/games/{id}/start`,
+which is idempotent, so it can fire on every keystroke and only the first one
+counts. The server keeps the time, not the page, so a doctored client cannot
+claim a four-second game. A game that never calls it is timed from its first
+guess; a game that never reaches the server at all is scored as if it used its
+whole window, because withholding the clock must not pay.
+
+Every constant lives in `backend/wordle/scoring.py` and nowhere else. They are
+not settings: a score has to mean the same thing in every deployment.
 
 ## Game shape
 

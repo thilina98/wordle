@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from pydantic import BaseModel, Field
 
 from .game import MIN_ATTEMPTS, Colour, GameState
+from .scoring import Score, score_for
 
 
 class LoginRequest(BaseModel):
@@ -43,6 +46,29 @@ class AttemptView(BaseModel):
     colours: list[Colour]
 
 
+class ScoreView(BaseModel):
+    """A finished game's score, with the working shown.
+
+    Every term the formula produced is here, not just the total, so the client
+    can explain a score without reimplementing the arithmetic.
+    """
+
+    word_length: int
+    max_attempts: int
+    is_won: bool
+    winning_attempt: int | None
+    game_time_seconds: float
+    base: float
+    time_bonus: float
+    multiplier: float
+    raw_score: float
+    score: float
+
+    @classmethod
+    def of(cls, score: Score) -> ScoreView:
+        return cls(**asdict(score))
+
+
 class GameView(BaseModel):
     """Everything the client needs to draw the board.
 
@@ -58,9 +84,12 @@ class GameView(BaseModel):
     is_won: bool
     letter_states: dict[str, Colour]
     answer: str | None = None
+    #: Null until the game is over. There is no score for a game in progress.
+    score: ScoreView | None = None
 
     @classmethod
     def of(cls, game_id: str, game: GameState) -> GameView:
+        score = score_for(game)
         return cls(
             game_id=game_id,
             word_length=game.word_length,
@@ -71,4 +100,5 @@ class GameView(BaseModel):
             is_won=game.is_won,
             letter_states=game.letter_states,
             answer=game.target if game.is_over else None,
+            score=ScoreView.of(score) if score else None,
         )

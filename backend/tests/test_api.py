@@ -386,3 +386,58 @@ class TestDomainLimitsReachTheClient:
     def test_zero_is_refused_rather_than_silently_defaulted(self, settings, make_client):
         client = make_client(settings)
         assert client.post("/api/games", json={"max_attempts": 0}).status_code == 422
+
+
+class TestScoring:
+    """The score rides along on the board, so no extra round trip is needed."""
+
+    def test_a_game_in_progress_carries_no_score(self, client, answer):
+        answer("crane")
+        game = new_game(client)
+        assert game["score"] is None
+        assert guess(client, game["game_id"], "state").json()["score"] is None
+
+    def test_a_finished_game_carries_its_score_and_its_working(self, client, answer):
+        word = answer("crane")
+        game = new_game(client)
+        client.post(f"/api/games/{game['game_id']}/start")
+        guess(client, game["game_id"], "state")
+        score = guess(client, game["game_id"], word).json()["score"]
+
+        assert score["is_won"] is True
+        assert score["winning_attempt"] == 2
+        assert score["word_length"] == 5
+        assert score["max_attempts"] == 5
+        # Played in no time at all, so very nearly the perfect 10.
+        assert 9.9 < score["score"] <= 10.0
+        assert score["multiplier"] == 1.0
+
+    def test_a_lost_game_scores_zero(self, client, answer):
+        answer("crane")
+        game = new_game(client)
+        for _ in range(5):
+            response = guess(client, game["game_id"], "state")
+        score = response.json()["score"]
+        assert score["is_won"] is False
+        assert score["score"] == 0.0
+
+    def test_the_clock_starts_on_demand_and_survives_a_reload(self, client, answer):
+        answer("crane")
+        game = new_game(client)
+        started = client.post(f"/api/games/{game['game_id']}/start")
+        assert started.status_code == 200
+
+        reloaded = client.get(f"/api/games/{game['game_id']}")
+        assert reloaded.json()["score"] is None  # still playing
+
+        guess(client, game["game_id"], "crane")
+        score = client.get(f"/api/games/{game['game_id']}").json()["score"]
+        assert score["game_time_seconds"] < 60
+
+    def test_starting_an_unknown_game_is_a_404(self, client):
+        assert client.post("/api/games/nope/start").status_code == 404
+
+    def test_starting_a_game_needs_a_token(self, anon, client, answer):
+        answer("crane")
+        game = new_game(client)
+        assert anon.post(f"/api/games/{game['game_id']}/start").status_code == 401

@@ -3,6 +3,8 @@ separate application on its own origin and fetches everything from here."""
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 
 from .config import Settings
@@ -49,6 +51,17 @@ def require_token(request: Request, authorization: str | None = Header(default=N
             str(exc),
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+
+
+def _now() -> float:
+    """The clock every timed route reads.
+
+    Wall clock, not monotonic, because a game outlives the process: its start
+    is written to a row that a restarted server has to be able to subtract
+    from. The server keeps time, not the client, so a doctored page cannot
+    claim a four-second game.
+    """
+    return time.time()
 
 
 def _load_game(request: Request, game_id: str) -> GameState:
@@ -141,13 +154,30 @@ def read_game(request: Request, game_id: str) -> GameView:
 
 
 @router.post(
+    "/games/{game_id}/start", response_model=GameView, dependencies=[Depends(require_token)]
+)
+def start_game(request: Request, game_id: str) -> GameView:
+    """Start this game's clock, on the player's first keystroke.
+
+    Separate from creating the game because the two are not the same moment: a
+    board can sit untouched while its player reads the rules, and that is not
+    time spent playing. Idempotent, so the client may call it on every
+    keystroke and only the first one counts.
+    """
+    game = _load_game(request, game_id)
+    game.start_timer(_now())
+    _store(request).save(game_id, game)
+    return GameView.of(game_id, game)
+
+
+@router.post(
     "/games/{game_id}/guesses", response_model=GameView, dependencies=[Depends(require_token)]
 )
 def submit_guess(request: Request, game_id: str, payload: GuessRequest) -> GameView:
     """Score one guess and return the updated board."""
     game = _load_game(request, game_id)
     try:
-        game.guess(payload.guess)
+        game.guess(payload.guess, now=_now())
     except GameOverError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except InvalidGuessError as exc:

@@ -107,6 +107,11 @@ class GameState:
     #: None means the default for this word's length: one guess per letter.
     max_attempts: int | None = None
     attempts: list[Attempt] = field(default_factory=list)
+    #: When the player started playing, by whatever clock the caller keeps.
+    #: Set through `start_timer`, or on the first guess if nobody did.
+    started_at: float | None = None
+    #: When the game ended. Set by the guess that ended it.
+    finished_at: float | None = None
 
     def __post_init__(self) -> None:
         self.target = self.target.lower()
@@ -146,6 +151,32 @@ class GameState:
         return max(0, self.max_attempts - len(self.attempts))
 
     @property
+    def winning_attempt(self) -> int | None:
+        """Which attempt won it, counting from 1. None if it was not won."""
+        return len(self.attempts) if self.is_won else None
+
+    @property
+    def game_time_seconds(self) -> float | None:
+        """How long the game took, or None while it is still running.
+
+        Measured from the moment the player committed to playing -- the first
+        keystroke, if the caller said so -- to the guess that ended it. It
+        never pauses: a game left open is a game still being played.
+        """
+        if self.started_at is None or self.finished_at is None:
+            return None
+        return max(0.0, self.finished_at - self.started_at)
+
+    def start_timer(self, now: float) -> None:
+        """Mark the start of play. The first call wins; later ones do nothing.
+
+        Idempotent because the client calls it on the first keystroke and has
+        no cheap way to know whether that keystroke was really the first.
+        """
+        if self.started_at is None:
+            self.started_at = now
+
+    @property
     def letter_states(self) -> dict[str, Colour]:
         """Best result seen so far per letter, for colouring the keyboard."""
         states: dict[str, Colour] = {}
@@ -155,12 +186,17 @@ class GameState:
                     states[letter] = colour
         return states
 
-    def guess(self, word: str) -> Attempt:
+    def guess(self, word: str, now: float | None = None) -> Attempt:
         """Score a guess and record it.
+
+        `now` is a clock reading, which the caller supplies rather than the
+        game reading one itself: the domain stays pure, and a test can play a
+        whole game in whatever time it likes. Passing None leaves the timer
+        alone, so a caller that does not care about scoring can ignore it.
 
         Raises GameOverError if the game has finished, InvalidGuessError if the
         guess is the wrong shape or not a real word. Neither consumes an
-        attempt.
+        attempt, and neither moves the clock.
         """
         if self.is_over:
             raise GameOverError("This game has already finished")
@@ -175,4 +211,10 @@ class GameState:
 
         attempt = Attempt(guess=word, colours=evaluate_guess(self.target, word))
         self.attempts.append(attempt)
+        if now is not None:
+            # A client that never signalled its first keystroke still gets a
+            # timed game, just one that misses the thinking before guess one.
+            self.start_timer(now)
+            if self.is_over:
+                self.finished_at = now
         return attempt
