@@ -144,6 +144,7 @@ const el = {
   toast: document.getElementById('toast'),
   result: document.getElementById('result'),
   resultTitle: document.getElementById('result-title'),
+  resultScore: document.getElementById('result-score'),
   resultText: document.getElementById('result-text'),
   again: document.getElementById('again'),
 };
@@ -152,6 +153,7 @@ const el = {
 let view = null;
 let draft = '';
 let busy = false;      // a request is in flight, or a row is still revealing
+let clockStarted = false;   // this game's clock has been asked to start
 let tiles = [];
 let toastTimer = null;
 let busyTimer = null;
@@ -320,9 +322,26 @@ function rejectRow() {
   window.setTimeout(() => row.removeAttribute('data-invalid'), 500);
 }
 
+/**
+ * Show what the win was worth.
+ *
+ * Only on a win: a loss scores zero, and a nought is not news. The server
+ * sends the number already rounded; two decimals is how it is meant to read.
+ */
+function paintScore() {
+  const earned = view.is_won && view.score ? view.score.score : null;
+  el.resultScore.hidden = earned === null;
+  if (earned === null) return;
+
+  const unit = document.createElement('span');
+  unit.textContent = earned === 1 ? 'point' : 'points';
+  el.resultScore.replaceChildren(earned.toFixed(2), ' ', unit);
+}
+
 /** Wait out the reveal before covering the board with the result. */
 function showResult() {
   window.setTimeout(() => {
+    paintScore();
     if (view.is_won) {
       el.resultTitle.textContent = 'Solved';
       el.resultText.textContent = `In ${view.attempts.length} of ${view.max_attempts}.`;
@@ -339,6 +358,23 @@ function showResult() {
 
 // --- Input ----------------------------------------------------------------
 
+/**
+ * Start the clock on the first letter typed, which is when play really begins.
+ *
+ * Fire and forget. A score is worth less than a responsive board, so a slow or
+ * failed call must not hold up the keystroke that triggered it; the server
+ * falls back to timing from the first guess. Asked for once per game here, and
+ * ignored after the first by the server, so a resumed game keeps the clock it
+ * already started.
+ */
+function startClock() {
+  if (clockStarted) return;
+  clockStarted = true;
+  WordleApi.startGame(view.game_id).catch(() => {
+    // Nothing to tell the player: the game plays exactly the same either way.
+  });
+}
+
 function handleKey(key) {
   if (busy || !view || view.is_over) return;
 
@@ -349,6 +385,7 @@ function handleKey(key) {
     draft = draft.slice(0, -1);
     paint();
   } else if (/^[a-z]$/.test(key) && draft.length < view.word_length) {
+    startClock();
     draft += key;
     paint();
   }
@@ -412,6 +449,7 @@ async function start(force = false) {
 
   draft = '';
   busy = false;
+  clockStarted = false;
   window.clearTimeout(busyTimer);
   try {
     window.localStorage.setItem(STORAGE_KEY, view.game_id);

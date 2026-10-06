@@ -110,6 +110,11 @@ const WordleApi = (() => {
       });
     },
     readGame: (id) => request(`/api/games/${encodeURIComponent(id)}`),
+
+    /** Start the game's clock. Idempotent: only the server's first one counts. */
+    startGame: (id) =>
+      request(`/api/games/${encodeURIComponent(id)}/start`, { method: 'POST' }),
+
     submitGuess: (id, guess) =>
       request(`/api/games/${encodeURIComponent(id)}/guesses`, {
         method: 'POST',

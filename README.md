@@ -259,7 +259,8 @@ the lengths that do exist, and an omitted `word_length` uses
 A finished game is worth a score. Normal mode — one attempt per letter — is
 out of 10. Playing with fewer attempts is harder, and scores more. The score
 arrives on the board itself, in the `score` field, so there is no second
-request to make.
+request to make. The page shows it on the end-of-game card after a win; a loss
+scores nothing, so nothing is shown.
 
 ```json
 {

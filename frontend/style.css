@@ -301,6 +301,27 @@ main {
 }
 
 .card p { margin: 0 0 20px; color: var(--muted); }
+
+/* The score is the first thing to read on a win, so it is the biggest thing
+   on the card. The unit beside it is a label, not part of the number. */
+.score {
+  margin: 0 0 4px;
+  font-size: 2rem;    /* Font size of score in game won pop-up */
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--hit);
+}
+.score[hidden] { display: none; }
+.score span {
+  /* A space sits between the two in the markup, so a screen reader reads
+     "8.42 points"; this is the optical gap on top of it. */
+  margin-left: 4px;
+  font-size: .8rem;
+  font-weight: 600;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
 .card strong { color: var(--text); letter-spacing: .1em; text-transform: uppercase; }
 
 .primary {
