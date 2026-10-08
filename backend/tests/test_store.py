@@ -77,6 +77,28 @@ class TestGameStoreContract:
     def test_delete_is_idempotent(self, make_store):
         make_store().delete("nope")  # must not raise
 
+    def test_an_unowned_game_is_visible_to_everyone(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.get(game_id) is not None
+        assert store.get(game_id, viewer="player-1") is not None
+
+    def test_an_owned_game_is_visible_to_its_owner_only(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-1")
+        assert store.get(game_id, viewer="player-1") is not None
+        assert store.get(game_id, viewer="player-2") is None
+        assert store.get(game_id) is None
+
+    def test_ownership_survives_a_save(self, make_store):
+        store = make_store()
+        game = a_game()
+        game_id = store.create(game, owner="player-1")
+        game.guess("crane")
+        store.save(game_id, game)
+        assert store.get(game_id) is None
+        assert store.get(game_id, viewer="player-1") is not None
+
     def test_saved_guesses_are_read_back(self, make_store):
         store = make_store()
         game = a_game()
@@ -144,6 +166,25 @@ class TestSqliteDurability:
 
     def _store(self, path, **kwargs):
         return SqliteGameStore(path, vocabulary_for=lambda length: VOCABULARY, **kwargs)
+
+    def test_a_database_from_before_accounts_opens_and_its_games_are_unowned(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE games (id TEXT PRIMARY KEY, target TEXT NOT NULL,"
+                " max_attempts INTEGER NOT NULL, attempts TEXT NOT NULL,"
+                " touched_at REAL NOT NULL)"
+            )
+            conn.execute("INSERT INTO games VALUES ('old', 'crane', 5, '[]', 9e12)")
+        conn.close()
+        store = self._store(path, clock=lambda: 9e12)
+        try:
+            assert store.get("old", viewer="anyone") is not None
+            assert store.create(a_game(), owner="player-1")
+        finally:
+            store.close()
 
     def test_a_game_survives_the_process_that_made_it(self, tmp_path):
         path = tmp_path / "games.db"

@@ -1,7 +1,11 @@
 """Settings, read from the environment.
 
 Every value is overridable with a WORDLE_-prefixed environment variable, e.g.
-WORDLE_WORD_LENGTH. Nothing is required: the defaults run a playable game.
+WORDLE_AUTH_ISSUER. The one secret, the database password, is read from a file
+in the secrets directory, never from .env.
+
+Sign-in is off until an identity provider is configured. With it off, the game
+is fully playable anonymously; nothing else changes.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Where secrets live, one file each. Secrets are never
@@ -43,12 +47,49 @@ class Settings(BaseSettings):
         env_prefix="WORDLE_",
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
-        # One file per secret, named after the setting. None are needed at the
-        # moment; the directory is read so one can be added without code.
-        # Kept out of .env and out of the environment --
-        # `docker inspect` prints the environment, not a file's contents.
+        # One file per secret, named after the setting: wordle_database_password.
+        # Kept out of .env and out of the environment -- `docker inspect`
+        # prints the environment, not a file's contents.
         secrets_dir=_secrets_dir(),
         extra="ignore",
+    )
+
+    # --- Sign-in. Any standard OpenID Connect provider; none is named in code.
+    auth_issuer: str | None = Field(
+        default=None,
+        description=(
+            "Identity provider's issuer URL, exactly as its discovery document "
+            "states it (Auth0's ends in a slash). Unset turns sign-in off."
+        ),
+    )
+    auth_audience: str | None = Field(
+        default=None,
+        description="The identifier this API is registered under at the provider.",
+    )
+    auth_algorithms: Annotated[list[str], NoDecode] = Field(
+        default=["RS256"],
+        description="Accepted token signature algorithms. Comma-separated in the environment.",
+    )
+    auth_link_verified_emails: bool = Field(
+        default=True,
+        description=(
+            "Join a new sign-in method to an existing player when the provider "
+            "has verified they share an email."
+        ),
+    )
+
+    # --- Players
+    player_store: Literal["postgres", "memory"] = Field(
+        default="postgres",
+        description="postgres keeps players; memory forgets them on restart",
+    )
+    database_url: str | None = Field(
+        default=None,
+        description="PostgreSQL connection URL, without the password.",
+    )
+    database_password: str | None = Field(
+        default=None,
+        description="PostgreSQL password. A secret file, never an environment variable.",
     )
 
     # --- CORS. The frontend is a separate origin, so it must be named here.
@@ -91,13 +132,31 @@ class Settings(BaseSettings):
     game_ttl_seconds: int = Field(default=60 * 60 * 4, ge=60)
     max_games: int = Field(default=10_000, ge=1)
 
-    @field_validator("allowed_origins", mode="before")
+    @field_validator("allowed_origins", "auth_algorithms", mode="before")
     @classmethod
-    def _split_origins(cls, value: object) -> object:
-        """Accept "http://a, http://b" from the environment as well as a list."""
+    def _split_list(cls, value: object) -> object:
+        """Accept "a, b" from the environment as well as a list."""
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @property
+    def sign_in_enabled(self) -> bool:
+        return self.auth_issuer is not None
+
+    @model_validator(mode="after")
+    def _sign_in_is_complete(self) -> Settings:
+        """Half a sign-in configuration is a mistake; stop at startup, not at login."""
+        if not self.sign_in_enabled:
+            return self
+        if not self.auth_audience:
+            raise ValueError("WORDLE_AUTH_AUDIENCE is required when WORDLE_AUTH_ISSUER is set")
+        if self.player_store == "postgres" and not self.database_url:
+            raise ValueError(
+                "WORDLE_DATABASE_URL is required when sign-in is on and "
+                "WORDLE_PLAYER_STORE is postgres"
+            )
+        return self
 
 
 @lru_cache

@@ -1,6 +1,11 @@
-"""End-to-end tests over the HTTP surface."""
+"""End-to-end tests over the HTTP surface: accounts, then the game."""
+
+import pytest
+from fastapi.testclient import TestClient
 
 from tests.conftest import ANSWERS, EXTRA_GUESSES, ORIGIN, write_length
+from wordle.accounts import SignInDisabled
+from wordle.app import create_app
 
 
 def new_game(client) -> dict:
@@ -32,24 +37,122 @@ class TestServesJsonOnly:
             assert client.get(path).status_code == 404
 
 
-class TestNoPassword:
-    """Anyone can play. The shared password is gone, not just unenforced."""
+class TestAnonymousPlay:
+    """No account needed: the game plays exactly as it did before accounts."""
 
-    def test_a_game_can_be_played_with_no_credentials(self, client, answer):
+    def test_a_game_can_be_played_without_signing_in(self, client, answer):
         answer("crane")
         game = new_game(client)
         assert guess(client, game["game_id"], "crane").json()["is_won"] is True
 
-    def test_the_login_route_is_gone(self, client):
+    def test_there_is_no_shared_password_any_more(self, client):
         assert client.post("/api/login", json={"password": "x"}).status_code == 404
 
-    def test_the_session_route_is_gone(self, client):
-        assert client.get("/api/session").status_code == 404
+    def test_an_anonymous_game_is_open_to_anyone_holding_its_id(self, client, sign_in):
+        # As before accounts: the unguessable id is the only key.
+        game_id = new_game(client)["game_id"]
+        assert sign_in("someone").get(f"/api/games/{game_id}").status_code == 200
 
-    def test_a_stale_token_from_the_password_version_is_ignored(self, client):
-        # Browsers may still hold one; it must not get in the way of playing.
-        client.headers["Authorization"] = "Bearer left-over-token"
+    def test_a_signed_in_player_can_finish_a_game_started_anonymously(
+        self, client, sign_in, answer
+    ):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        player = sign_in("someone")
+        assert guess(player, game_id, "crane").json()["is_won"] is True
+
+
+class TestSignIn:
+    def test_me_needs_a_token(self, client):
+        response = client.get("/api/me")
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    def test_first_sign_in_creates_the_player(self, sign_in, players):
+        response = sign_in("google|1", email="ada@example.com", verified=True, name="Ada").get(
+            "/api/me"
+        )
+        assert response.status_code == 200
+        assert response.json()["display_name"] == "Ada"
+        assert len(players) == 1
+
+    def test_signing_in_again_is_the_same_player(self, sign_in, players):
+        first = sign_in("google|1").get("/api/me").json()
+        again = sign_in("google|1").get("/api/me").json()
+        assert first == again
+        assert len(players) == 1
+
+    def test_a_known_player_costs_no_call_to_the_provider(self, sign_in, provider):
+        player = sign_in("google|1")
+        player.get("/api/me")
+        player.get("/api/me")
+        player.post("/api/games")
+        assert provider.profile_calls == 1
+
+    def test_a_bad_token_is_refused_not_treated_as_anonymous(self, client):
+        client.headers["Authorization"] = "Bearer not-a-real-token"
+        response = client.post("/api/games")
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
+
+    @pytest.mark.parametrize("header", ["token", "Basic abc", "Bearer", "Bearer "])
+    def test_a_malformed_authorization_header_is_refused(self, client, header):
+        client.headers["Authorization"] = header
+        assert client.post("/api/games").status_code == 401
+
+    def test_a_provider_outage_is_a_503_not_a_401(self, sign_in, provider):
+        player = sign_in("google|1")
+        provider.down = True
+        assert player.get("/api/me").status_code == 503
+
+    def test_a_provider_outage_does_not_stop_anonymous_play(self, client, provider):
+        provider.down = True
         assert client.post("/api/games").status_code == 201
+
+    def test_with_sign_in_off_tokens_are_refused_and_play_still_works(self, settings):
+        app = create_app(settings, accounts=SignInDisabled())
+        try:
+            client = TestClient(app)
+            assert client.post("/api/games").status_code == 201
+            client.headers["Authorization"] = "Bearer anything"
+            response = client.get("/api/me")
+            assert response.status_code == 401
+            assert "not enabled" in response.json()["detail"]
+        finally:
+            app.state.store.close()
+
+
+class TestGameOwnership:
+    def test_a_signed_in_players_game_is_theirs(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        game_id = new_game(player)["game_id"]
+        assert player.get(f"/api/games/{game_id}").status_code == 200
+        assert guess(player, game_id, "crane").status_code == 200
+
+    def test_another_player_cannot_see_it(self, sign_in):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        other = sign_in("github|2")
+        assert other.get(f"/api/games/{game_id}").status_code == 404
+        assert other.post(f"/api/games/{game_id}/start").status_code == 404
+        assert guess(other, game_id, "crane").status_code == 404
+
+    def test_an_anonymous_player_cannot_see_it(self, sign_in, client):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        assert client.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_someone_elses_game_looks_like_no_game(self, sign_in):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        other = sign_in("github|2")
+        assert (
+            other.get(f"/api/games/{game_id}").json() == other.get("/api/games/no-such-game").json()
+        )
+
+    def test_the_same_person_on_another_sign_in_method_keeps_their_games(self, sign_in):
+        google = sign_in("google|1", email="ada@example.com", verified=True)
+        game_id = new_game(google)["game_id"]
+        github = sign_in("github|2", email="ADA@example.com", verified=True)
+        assert github.get(f"/api/games/{game_id}").status_code == 200
 
 
 class TestCors:
@@ -60,6 +163,18 @@ class TestCors:
     def test_does_not_allow_an_unknown_origin(self, client):
         response = client.post("/api/games", headers={"Origin": "http://evil.example"})
         assert "access-control-allow-origin" not in response.headers
+
+    def test_preflight_permits_the_authorization_header(self, client):
+        response = client.options(
+            "/api/games",
+            headers={
+                "Origin": ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+        assert response.status_code == 200
+        assert "authorization" in response.headers["access-control-allow-headers"].lower()
 
 
 class TestNewGame:

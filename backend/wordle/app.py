@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .accounts import Accounts, InMemoryPlayerRepository, PlayerRepository, SignInDisabled
 from .api import router as api_router
 from .config import Settings, get_settings
 from .game import MIN_ATTEMPTS, default_attempts
@@ -70,7 +71,38 @@ def _game_store(settings: Settings, catalogue: WordCatalogue) -> GameStore:
     )
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def _player_repository(settings: Settings) -> PlayerRepository:
+    """Imported lazily so a deployment without PostgreSQL needs no driver."""
+    if settings.player_store == "memory":
+        return InMemoryPlayerRepository()
+    from .accounts.postgres import PostgresPlayerRepository
+
+    return PostgresPlayerRepository(settings.database_url, password=settings.database_password)
+
+
+def _accounts(settings: Settings) -> Accounts | SignInDisabled:
+    """Sign-in as configured, or anonymous play only."""
+    if not settings.sign_in_enabled:
+        return SignInDisabled()
+    from .accounts.oidc import OidcProvider
+
+    return Accounts(
+        OidcProvider(
+            settings.auth_issuer,
+            settings.auth_audience,
+            algorithms=settings.auth_algorithms,
+        ),
+        _player_repository(settings),
+        link_verified_emails=settings.auth_link_verified_emails,
+    )
+
+
+def create_app(
+    settings: Settings | None = None,
+    *,
+    accounts: Accounts | SignInDisabled | None = None,
+) -> FastAPI:
+    """Build the app. `accounts` overrides what settings would build, for tests."""
     settings = settings or get_settings()
 
     catalogue = _catalogue(settings)
@@ -79,9 +111,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         yield
-        # Release the database connection on a clean shutdown.
+        # Release database connections on a clean shutdown.
         with suppress(AttributeError):
             app.state.store.close()
+        with suppress(AttributeError):
+            app.state.accounts.close()
 
     app = FastAPI(
         lifespan=lifespan,
@@ -95,14 +129,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.catalogue = catalogue
     app.state.store = _game_store(settings, catalogue)
+    app.state.accounts = accounts if accounts is not None else _accounts(settings)
 
-    # Named origins only. Nothing travels in a cookie, so credentialed CORS is
-    # not needed, and "*" would be a needless invitation.
+    # Named origins only. A signed-in player's token travels in a header, not
+    # a cookie, so credentialed CORS is not needed and "*" would be a needless
+    # invitation.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
         allow_methods=["GET", "POST"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
     app.include_router(api_router)

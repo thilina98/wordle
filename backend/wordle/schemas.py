@@ -6,8 +6,20 @@ from dataclasses import asdict
 
 from pydantic import BaseModel, Field
 
+from .accounts import Player
 from .game import MIN_ATTEMPTS, Colour, GameState
 from .scoring import Score, score_for
+
+
+class PlayerView(BaseModel):
+    """A signed-in player, as they see themselves."""
+
+    player_id: str
+    display_name: str
+
+    @classmethod
+    def of(cls, player: Player) -> PlayerView:
+        return cls(player_id=player.player_id, display_name=player.display_name)
 
 
 class CreateGameRequest(BaseModel):

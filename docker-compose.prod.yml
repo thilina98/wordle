@@ -26,6 +26,15 @@ services:
   api:
     network_mode: host
     ports: !reset []
+    environment:
+      # On the host network the compose name "db" does not resolve, so reach
+      # the database through the loopback port published below.
+      WORDLE_DATABASE_URL: postgresql://wordle@127.0.0.1:5432/wordle
+
+  db:
+    # Loopback only: reachable by the API on this machine, never from outside.
+    ports:
+      - "127.0.0.1:5432:5432"
 
   web:
     network_mode: host

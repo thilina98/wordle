@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fakes import FakeIdentityProvider
+from wordle.accounts import Accounts, InMemoryPlayerRepository
 from wordle.app import create_app
 from wordle.config import Settings
 
@@ -44,8 +46,23 @@ def settings(word_lists_dir, tmp_path) -> Settings:
 
 
 @pytest.fixture
-def app(settings):
-    app = create_app(settings)
+def provider() -> FakeIdentityProvider:
+    return FakeIdentityProvider()
+
+
+@pytest.fixture
+def players() -> InMemoryPlayerRepository:
+    return InMemoryPlayerRepository()
+
+
+@pytest.fixture
+def accounts(provider, players) -> Accounts:
+    return Accounts(provider, players)
+
+
+@pytest.fixture
+def app(settings, accounts):
+    app = create_app(settings, accounts=accounts)
     yield app
     # The sqlite store holds an open connection; tests do not run lifespan.
     close = getattr(app.state.store, "close", None)
@@ -55,8 +72,20 @@ def app(settings):
 
 @pytest.fixture
 def client(app) -> TestClient:
-    """A player. There is no password, so every client is just a client."""
+    """An anonymous player: no token, which is how most people play."""
     return TestClient(app)
+
+
+@pytest.fixture
+def sign_in(app, provider):
+    """A client signed in as a given person at the fake identity provider."""
+
+    def build(subject: str, **profile) -> TestClient:
+        client = TestClient(app)
+        client.headers["Authorization"] = f"Bearer {provider.person(subject, **profile)}"
+        return client
+
+    return build
 
 
 @pytest.fixture

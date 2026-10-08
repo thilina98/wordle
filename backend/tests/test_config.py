@@ -1,6 +1,7 @@
 """Settings must fail fast on a configuration that cannot work."""
 
 import pytest
+from pydantic import ValidationError
 
 from wordle.app import create_app
 from wordle.config import Settings
@@ -19,14 +20,79 @@ def no_secrets(tmp_path):
     return str(empty)
 
 
-def test_starts_with_no_secrets_at_all(no_secrets):
-    # There is no shared password and no signing key any more.
-    Settings(_env_file=None, _secrets_dir=no_secrets)
+def test_starts_with_no_secrets_at_all(monkeypatch, no_secrets):
+    # Anonymous play needs nothing configured; there is no shared password.
+    monkeypatch.delenv("WORDLE_AUTH_ISSUER", raising=False)
+    settings = Settings(_env_file=None, _secrets_dir=no_secrets)
+    assert settings.sign_in_enabled is False
 
 
 def test_reads_values_from_the_environment(monkeypatch):
     monkeypatch.setenv("WORDLE_WORD_LENGTH", "6")
-    assert Settings(_env_file=None).word_length == 6
+    monkeypatch.setenv("WORDLE_AUTH_ISSUER", "https://id.example.test/")
+    monkeypatch.setenv("WORDLE_AUTH_AUDIENCE", "https://wordle-api")
+    monkeypatch.setenv("WORDLE_DATABASE_URL", "postgresql://wordle@db/wordle")
+    settings = Settings(_env_file=None)
+    assert settings.word_length == 6
+    assert settings.sign_in_enabled is True
+
+
+def test_reads_the_database_password_from_a_secret_file(tmp_path):
+    secrets = tmp_path / "secrets"
+    secrets.mkdir()
+    (secrets / "wordle_database_password").write_text("s3cret", encoding="utf-8")
+    settings = Settings(_env_file=None, _secrets_dir=str(secrets))
+    assert settings.database_password == "s3cret"
+
+
+class TestSignInConfiguration:
+    """Half a sign-in configuration stops startup instead of failing at login."""
+
+    ISSUER = "https://id.example.test/"
+
+    def test_an_issuer_needs_an_audience(self, no_secrets):
+        with pytest.raises(ValidationError, match="AUTH_AUDIENCE"):
+            Settings(auth_issuer=self.ISSUER, _env_file=None, _secrets_dir=no_secrets)
+
+    def test_postgres_players_need_a_database_url(self, no_secrets):
+        with pytest.raises(ValidationError, match="DATABASE_URL"):
+            Settings(
+                auth_issuer=self.ISSUER,
+                auth_audience="api",
+                _env_file=None,
+                _secrets_dir=no_secrets,
+            )
+
+    def test_in_memory_players_need_no_database(self, no_secrets):
+        settings = Settings(
+            auth_issuer=self.ISSUER,
+            auth_audience="api",
+            player_store="memory",
+            _env_file=None,
+            _secrets_dir=no_secrets,
+        )
+        assert settings.sign_in_enabled
+
+    def test_algorithms_arrive_comma_separated(self, monkeypatch):
+        monkeypatch.setenv("WORDLE_AUTH_ALGORITHMS", "RS256, ES256")
+        assert Settings(_env_file=None).auth_algorithms == ["RS256", "ES256"]
+
+    def test_the_app_builds_real_sign_in_from_settings(self, settings):
+        # No network and no database: discovery is lazy, players in memory.
+        configured = settings.model_copy(
+            update={
+                "auth_issuer": self.ISSUER,
+                "auth_audience": "api",
+                "player_store": "memory",
+            }
+        )
+        app = create_app(configured)
+        try:
+            from wordle.accounts import Accounts
+
+            assert isinstance(app.state.accounts, Accounts)
+        finally:
+            app.state.store.close()
 
 
 class TestAllowedOrigins:

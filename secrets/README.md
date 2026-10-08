@@ -1,16 +1,31 @@
 # Secrets
 
-None are needed at the moment. The shared game password and the token-signing
-key were removed: anyone can play. If you still have `wordle_password` and
-`wordle_secret_key` here, they are unused and can be deleted.
+One file, one secret. The file contents are the whole secret — no `KEY=`
+prefix, no quotes.
 
-When a secret is added, it goes here as one file, named after its setting,
-holding just the value — no `KEY=` prefix, no quotes. The app reads this
-directory whether or not it is in Docker — `/run/secrets` inside a container,
-`secrets/` when run from source.
+| File | What it is |
+|---|---|
+| `wordle_database_password` | Password for the PostgreSQL `wordle` user. The `db` container sets it on first start; the API reads it to connect. |
 
-**Secrets belong here and nowhere else.** Never in `.env`: that file is read by
-Docker Compose, so a secret in it becomes a container environment variable,
-and `docker inspect` prints those.
+Create it:
+
+```bash
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+chmod 600 secrets/wordle_*
+```
+
+The app reads this directory whether or not it is in Docker — `/run/secrets`
+inside a container, `secrets/` when run from source. **Secrets belong here and
+nowhere else.** Never in `.env`: that file is read by Docker Compose, so a
+secret in it becomes a container environment variable, and `docker inspect`
+prints those.
+
+PostgreSQL only reads the password when it creates a fresh database. Changing
+the file afterwards also needs `ALTER USER wordle PASSWORD '...'` inside the
+database, or the API will be locked out.
+
+There is no shared game password and no token-signing key any more: sign-in is
+done by an identity provider, which signs the tokens itself. The old
+`wordle_password` and `wordle_secret_key` files are unused and can be deleted.
 
 Everything here except this README is gitignored.

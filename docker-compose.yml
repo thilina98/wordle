@@ -1,4 +1,6 @@
-# Two services, run separately, talking over HTTP.
+# Three services: the frontend, the API, and PostgreSQL for player accounts.
+# The database is only used when sign-in is configured (WORDLE_AUTH_ISSUER);
+# without it the game is anonymous-only and the database sits idle.
 #
 #   docker compose up -d --build          works everywhere: Linux, Mac, Windows
 #
@@ -35,12 +37,22 @@ services:
     ports:
       - "8000:8000"
 
+    # Secrets as files, not environment variables: `docker inspect` and
+    # /proc/<pid>/environ both expose the environment, neither exposes these.
+    secrets:
+      - wordle_database_password
+
     environment:
       WORDLE_DATA_DIR: /data
       WORDLE_STORE: sqlite
       WORDLE_ALLOWED_ORIGINS: ${WORDLE_ALLOWED_ORIGINS:-http://localhost:8080}
-      WORDLE_MAX_ATTEMPTS: ${WORDLE_MAX_ATTEMPTS:-5}
       WORDLE_GAME_TTL_SECONDS: ${WORDLE_GAME_TTL_SECONDS:-14400}
+      # Sign-in. Leave the issuer empty for anonymous-only play. Any standard
+      # OpenID Connect provider works; see backend/ACCOUNTS.md.
+      WORDLE_AUTH_ISSUER: ${WORDLE_AUTH_ISSUER:-}
+      WORDLE_AUTH_AUDIENCE: ${WORDLE_AUTH_AUDIENCE:-}
+      WORDLE_PLAYER_STORE: postgres
+      WORDLE_DATABASE_URL: postgresql://wordle@db:5432/wordle
 
     # Games in progress. Survives `docker compose down`, image rebuilds and
     # the container being destroyed. Removed only by `docker volume rm`.
@@ -57,12 +69,42 @@ services:
         limits: { memory: 512M, cpus: "1.0" }
         reservations: { memory: 128M }
 
+    depends_on:
+      db:
+        condition: service_healthy
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request as u,sys; sys.exit(0 if u.urlopen('http://127.0.0.1:8000/healthz',timeout=2).status==200 else 1)"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
+
+  db:
+    <<: *hardening
+    image: postgres:17-alpine
+    container_name: wordle-db
+    # The entrypoint starts as root to fix volume ownership, then drops to the
+    # postgres user; these are the capabilities that takes.
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    secrets:
+      - wordle_database_password
+    environment:
+      POSTGRES_USER: wordle
+      POSTGRES_DB: wordle
+      POSTGRES_PASSWORD_FILE: /run/secrets/wordle_database_password
+    # No ports: only the API talks to the database, over the compose network.
+    volumes:
+      - wordle-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wordle -d wordle"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 256M, cpus: "0.5" }
 
   web:
     <<: *hardening
@@ -96,6 +138,14 @@ services:
         limits: { memory: 64M, cpus: "0.5" }
 
 
+secrets:
+  wordle_database_password:
+    file: ./secrets/wordle_database_password
+
 volumes:
   wordle-data:
     name: wordle-data
+  # Player accounts. Back this one up: unlike games in progress, it is the
+  # only copy of who owns what.
+  wordle-db:
+    name: wordle-db

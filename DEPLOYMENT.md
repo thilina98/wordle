@@ -40,9 +40,11 @@ never 80 or 443. Two consequences:
 - You cannot get an HTTPS certificate for that address, because you cannot
   prove you own it.
 
-**Why fact 2 matters.** Over plain HTTP, everything crosses the network in clear
-text and can be altered on the way. The game holds nothing private, so for a
-quick test that is fine; if you send the link to other people, get HTTPS.
+**Why fact 2 matters more than it looks.** Signed-in players send a sign-in
+token with every request. Over plain HTTP that token crosses the network in
+clear text, and anyone between the visitor and your VPS can copy it and play
+as them. Identity providers also refuse to send players back to a plain-HTTP
+site that is not localhost. Anonymous play works over HTTP; sign-in needs HTTPS.
 
 ---
 
@@ -226,14 +228,30 @@ cd /opt/wordle
 
 ---
 
-## Step 3: create `.env`
+## Step 3: set the database secret
 
-There are no secrets to set: anyone can play.
+The game itself needs no secrets: anyone can play without an account. The one
+secret is the password for the PostgreSQL database that holds player accounts.
 
 ```bash
 cd /opt/wordle
 cp .env.example .env
 ```
+
+Secrets go in files, not in `.env`. `docker inspect` and `/proc/<pid>/environ`
+both show a container's environment; neither shows a mounted secret.
+
+```bash
+mkdir -p secrets
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+chmod 600 secrets/wordle_*
+```
+
+To turn sign-in on, also set `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE`
+in `.env`. Setting up the identity provider is in
+[backend/ACCOUNTS.md](backend/ACCOUNTS.md). Sign-in through a provider needs
+the site on HTTPS (Option A, C or D below); plain HTTP works only for
+anonymous play.
 
 Everything else goes in `.env`:
 
@@ -284,6 +302,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/   # web: expect 200
 - **Both containers run as non-root** with a read-only root filesystem, all
   Linux capabilities dropped, and `no-new-privileges`. The only writable paths
   are the volume and a small tmpfs.
+- **The database password is a mounted file**, not an environment variable.
 
 Verify all of that after it starts:
 
@@ -291,6 +310,8 @@ Verify all of that after it starts:
 docker exec wordle-api id                     # uid=10001, not root
 docker exec wordle-api touch /app/x           # must fail: read-only
 docker exec wordle-api touch /data/x          # must succeed: the volume
+docker exec wordle-api ls -l /run/secrets/    # wordle_database_password
+docker inspect wordle-api --format '{{json .Config.Env}}' | grep -c PASSWORD   # 0
 ```
 
 ### Ports, and whether you need the production override
@@ -424,8 +445,8 @@ WORDLE_API_BASE=http://<shared-ipv4>:20002
 
 Then the site is at `http://<shared-ipv4>:20001`.
 
-Nothing to install. Works for every visitor. But it is plain HTTP, so treat
-this as a "just me, just testing" option.
+Nothing to install. Works for every visitor, but anonymous play only: without
+HTTPS, sign-in cannot work.
 
 **If your provider cannot choose the internal port.** Some panels forward
 `public 20001 → your 20001` with no way to map it to 8080. Then the containers
@@ -518,6 +539,9 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
 
 # The API must serve no pages: 404
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/
+
+# Sign-in is wired up: 401 without a token (503 means the issuer is wrong)
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/api/me
 ```
 
 Then check the frontend picked up the right API base:
@@ -545,11 +569,14 @@ docker stats --no-stream              # what it is using
 cd /opt/wordle && git pull && docker compose up -d --build
 ```
 
-**Back up** `secrets/`, `.env`, and the volume:
+**Back up** `secrets/`, `.env`, the games volume and the player database:
 
 ```bash
 docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/wordle-data.tar.gz -C /data .
+
+# Players. This one matters: it is the only record of who owns what.
+docker exec wordle-db pg_dump -U wordle -Fc wordle > wordle-players.dump
 ```
 
 **Restore:**
@@ -559,8 +586,10 @@ docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
   tar xzf /backup/wordle-data.tar.gz -C /data
 ```
 
-The volume holds games in progress. Losing it is not a disaster — players get a
-fresh board — but there is no reason to.
+The `wordle-data` volume holds games in progress. Losing it is not a
+disaster — players get a fresh board — but there is no reason to. Restore the
+player database with
+`docker exec -i wordle-db pg_restore -U wordle -d wordle --clean < wordle-players.dump`.
 
 ### Developing against it
 
@@ -601,8 +630,9 @@ the console says so. Both must be the same scheme.
 written, because it uses host networking. It becomes an issue the moment
 someone switches it to `-p`.
 
-**There is no rate limit.** Every route is open. If the site is on the open
-internet and you care, put a real limit in front of it — Cloudflare or Caddy.
+**There is no rate limit.** Anyone can start games without signing in. If the
+site is on the open internet, put a real limit in front of it — Cloudflare or
+Caddy. Sign-in attempts are throttled by the identity provider, not here.
 
 **Hermes Agent and Wordle both want to be up.** Give Wordle the 512 MB limit the
 compose file already sets, so a runaway container cannot starve Hermes.
@@ -655,7 +685,8 @@ ReadWritePaths=/var/lib/wordle
 WantedBy=multi-user.target
 ```
 
-Without Docker the settings come from `/opt/wordle/.env`; no secrets are needed.
+Without Docker there are no mounted secrets, so put the database password in
+`/opt/wordle/secrets/wordle_database_password` and `chmod 600` it.
 
 ```bash
 sudo useradd --system --no-create-home wordle

@@ -26,14 +26,25 @@ DEFAULT_MAX_GAMES = 10_000
 
 
 class GameStore(Protocol):
-    """Storage for games in progress."""
+    """Storage for games in progress.
 
-    def create(self, game: GameState) -> str:
-        """Store a game and return its id."""
+    A game may have an owner: the player who started it while signed in. An
+    owned game is visible to its owner only. An unowned game, started
+    anonymously, is visible to anyone holding its id, as every game was before
+    accounts existed.
+    """
+
+    def create(self, game: GameState, owner: str | None = None) -> str:
+        """Store a game and return its id. `owner` is a player id, or None."""
         ...
 
-    def get(self, game_id: str) -> GameState | None:
-        """Fetch a live game, or None if it is unknown or expired."""
+    def get(self, game_id: str, viewer: str | None = None) -> GameState | None:
+        """Fetch a live game that `viewer` may see.
+
+        None if the game is unknown, expired, or owned by someone other than
+        `viewer`. The three look the same on purpose: a game id must not
+        reveal whether someone else's game exists.
+        """
         ...
 
     def save(self, game_id: str, game: GameState) -> None:
@@ -45,10 +56,16 @@ class GameStore(Protocol):
         ...
 
 
+def _visible(owner: str | None, viewer: str | None) -> bool:
+    """Anyone may see an unowned game; only its owner may see an owned one."""
+    return owner is None or owner == viewer
+
+
 @dataclass(slots=True)
 class _Entry:
     game: GameState
     touched_at: float
+    owner: str | None = None
 
 
 class InMemoryGameStore:
@@ -74,20 +91,20 @@ class InMemoryGameStore:
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, _Entry] = OrderedDict()
 
-    def create(self, game: GameState) -> str:
+    def create(self, game: GameState, owner: str | None = None) -> str:
         game_id = secrets.token_urlsafe(16)
         with self._lock:
             self._purge_expired()
-            self._entries[game_id] = _Entry(game=game, touched_at=self._clock())
+            self._entries[game_id] = _Entry(game=game, touched_at=self._clock(), owner=owner)
             # Drop the least recently used until we are back within capacity.
             while len(self._entries) > self._max_games:
                 self._entries.popitem(last=False)
         return game_id
 
-    def get(self, game_id: str) -> GameState | None:
+    def get(self, game_id: str, viewer: str | None = None) -> GameState | None:
         with self._lock:
             entry = self._entries.get(game_id)
-            if entry is None:
+            if entry is None or not _visible(entry.owner, viewer):
                 return None
             now = self._clock()
             if now - entry.touched_at > self._ttl:
@@ -138,7 +155,8 @@ class SqliteGameStore:
             attempts     TEXT    NOT NULL,
             touched_at   REAL    NOT NULL,
             started_at   REAL,
-            finished_at  REAL
+            finished_at  REAL,
+            owner_id     TEXT
         );
         CREATE INDEX IF NOT EXISTS games_touched_at ON games (touched_at);
     """
@@ -147,7 +165,8 @@ class SqliteGameStore:
     #: build has the table already, so CREATE TABLE IF NOT EXISTS skips it and
     #: these have to be put on by hand. Games in flight keep playing; they just
     #: score as untimed.
-    _ADDED_COLUMNS = (("started_at", "REAL"), ("finished_at", "REAL"))
+    #: owner_id arrived with accounts; a game from before it is unowned.
+    _ADDED_COLUMNS = (("started_at", "REAL"), ("finished_at", "REAL"), ("owner_id", "TEXT"))
 
     def __init__(
         self,
@@ -213,15 +232,16 @@ class SqliteGameStore:
             finished_at=finished_at,
         )
 
-    def create(self, game: GameState) -> str:
+    def create(self, game: GameState, owner: str | None = None) -> str:
         game_id = secrets.token_urlsafe(16)
         now = self._clock()
         with self._lock:
             self._purge(now)
             self._conn.execute(
                 "INSERT INTO games"
-                " (id, target, max_attempts, attempts, touched_at, started_at, finished_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " (id, target, max_attempts, attempts, touched_at, started_at, finished_at,"
+                " owner_id)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     game_id,
                     game.target,
@@ -230,20 +250,21 @@ class SqliteGameStore:
                     now,
                     game.started_at,
                     game.finished_at,
+                    owner,
                 ),
             )
             self._enforce_capacity()
         return game_id
 
-    def get(self, game_id: str) -> GameState | None:
+    def get(self, game_id: str, viewer: str | None = None) -> GameState | None:
         now = self._clock()
         with self._lock:
             row = self._conn.execute(
-                "SELECT target, max_attempts, attempts, started_at, finished_at, touched_at"
-                " FROM games WHERE id = ?",
+                "SELECT target, max_attempts, attempts, started_at, finished_at, touched_at,"
+                " owner_id FROM games WHERE id = ?",
                 (game_id,),
             ).fetchone()
-            if row is None:
+            if row is None or not _visible(row[6], viewer):
                 return None
             if now - row[5] > self._ttl:
                 self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))

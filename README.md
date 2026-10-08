@@ -1,7 +1,8 @@
 # Wordle
 
 Five letters, five guesses, colour-coded feedback. Plays on a phone or with a
-physical keyboard. Open to anyone: there is no password.
+physical keyboard. Anyone can play without an account; signing in (email and
+password, Google or GitHub) is optional and ties games to a player.
 
 One repository, two applications. They are built, run and deployed separately
 and share nothing but the HTTP contract between them.
@@ -48,6 +49,10 @@ cd backend
 
 cd ..
 cp .env.example .env                  # non-secret config; defaults suit local
+
+mkdir -p secrets                      # only needed for sign-in; see backend/ACCOUNTS.md
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+chmod 600 secrets/wordle_*
 ```
 
 **Terminal 1 — the API:**
@@ -64,7 +69,8 @@ cd frontend
 python3 -m http.server 8080
 ```
 
-Open **http://localhost:8080** and play.
+Open **http://localhost:8080**. With no `WORDLE_AUTH_ISSUER` set, sign-in is
+off and every game is anonymous; no database is needed.
 
 The frontend needs no build step and no Node. Any static server will do;
 `http.server` is just the one that is already installed.
@@ -122,7 +128,14 @@ from `.env` at the repo root. See [.env.example](.env.example).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. None are needed today. |
+| `WORDLE_AUTH_ISSUER` | unset | Identity provider's issuer URL. Unset turns sign-in off. |
+| `WORDLE_AUTH_AUDIENCE` | unset | This API's identifier at the provider. Required with an issuer. |
+| `WORDLE_AUTH_ALGORITHMS` | `RS256` | Accepted token signatures. Asymmetric only. |
+| `WORDLE_AUTH_LINK_VERIFIED_EMAILS` | `true` | Join sign-in methods that share a verified email. |
+| `WORDLE_PLAYER_STORE` | `postgres` | `memory` forgets players on restart. |
+| `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required for sign-in with `postgres`. |
+| `WORDLE_DATABASE_PASSWORD` | unset | **From `secrets/`.** |
+| `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
 | `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
@@ -132,7 +145,9 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
 | `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
 
-Nothing is required: the defaults run a playable game.
+The API needs no secrets to start. Half a sign-in configuration (an issuer
+without an audience, or no database URL) stops it at startup rather than at
+the first sign-in.
 
 **Secrets live in `secrets/`, never in `.env`** — one file per secret, the
 same directory in every environment (`/run/secrets` in Docker, `secrets/` from
@@ -140,24 +155,27 @@ source). Compose reads `.env`, so a secret placed there becomes a container
 environment variable and `docker inspect` prints it.
 
 `.env` holds the per-machine, non-secret settings: which URLs the browser uses,
-and the timeouts. There are no secrets at the moment. It is gitignored, so your laptop's copy and the VPS copy
+and the timeouts. It is gitignored, so your laptop's copy and the VPS copy
 differ. See [secrets/README.md](secrets/README.md) and
 [.env.example](.env.example).
 
 ## API
 
-JSON everywhere. Every route is open; there is no password or token.
+JSON everywhere. No route needs a token. Send `Authorization: Bearer <token>`
+(an access token from the identity provider) to play as a signed-in player.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/healthz` | Liveness. Public. |
+| `GET` | `/healthz` | Liveness. |
+| `GET` | `/api/me` | The signed-in player. The first call registers them. Token required. |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
 | `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |
 | `POST` | `/api/games/{id}/guesses` | Score a guess. |
 
 ```bash
-curl -s -X POST localhost:8000/api/games
+curl -s -X POST localhost:8000/api/games                                   # anonymous
+curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN" # as a player
 ```
 
 A board looks like this. `answer` and `score` stay `null` until the game ends:
@@ -180,14 +198,25 @@ A board looks like this. `answer` and `score` stay `null` until the game ends:
 Guess errors are specific, so the page can say something useful: `400` with
 `"Enter a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
 letters only"`. A rejected guess costs no attempt. `409` means the game is over,
-`404` that it expired or never existed.
+`404` that it expired, never existed or belongs to another player, `401` that
+a token was sent and is forged, expired or malformed (a bad token is never
+treated as anonymous), `503` that the identity provider or database is down.
 
 ## How access works
 
-There is none to speak of: anyone who can reach the page can play. A game is
-reached by its id, which is random and unguessable, so one player cannot stumble
-into another's board. The answer is never sent until the game is over, so the
-open frontend cannot be used to cheat.
+Anyone can play without an account. Signing in is optional and happens at an
+identity provider (Auth0 today), never in this API: the frontend sends the
+player there, gets back an access token, and sends it with each request. The
+API checks the token's signature against the provider's published keys and
+turns it into a player of our own, kept in PostgreSQL.
+
+A game started while signed in belongs to that player; anyone else gets a 404.
+A game started anonymously is open to whoever holds its unguessable id, as
+every game was before accounts.
+
+No provider and no database is named outside `backend/wordle/accounts/`, and
+both are swapped by configuration. See [backend/ACCOUNTS.md](backend/ACCOUNTS.md)
+for the design, provider setup and the database schema.
 
 ## Word lists
 
@@ -336,7 +365,7 @@ run against the same contract tests.
 
 ## Known limits
 
-- **Run exactly one worker.** SQLite takes one writer. Scaling out means Redis
-  or Postgres behind the `GameStore` protocol.
-- **No rate limit.** Every route is open, so put one at the reverse proxy for
-  an internet-facing deployment.
+- **Run exactly one worker.** SQLite takes one writer. Scaling out means
+  Postgres behind the `GameStore` protocol, as players already are.
+- **No rate limit.** Game routes are open to anonymous players, so put a rate
+  limit at the reverse proxy for an internet-facing deployment.
