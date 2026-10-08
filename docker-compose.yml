@@ -8,10 +8,15 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 #
-# The two URLs in .env are what the *browser* uses, not what the containers
+# Each application has its own settings file, and nothing is shared:
+#   backend/.env   -> the api container   (copy backend/.env.example)
+#   frontend/.env  -> the web container   (copy frontend/.env.example)
+# Both must exist before `docker compose up`.
+#
+# Two of those settings are what the *browser* uses, not what the containers
 # use. They must be addresses a visitor can actually reach:
-#   WORDLE_API_BASE        where the browser finds the API   -> baked into config.js
-#   WORDLE_ALLOWED_ORIGINS where the browser loaded the page -> the API's CORS list
+#   WORDLE_API_BASE        (frontend/.env) where the browser finds the API
+#   WORDLE_ALLOWED_ORIGINS (backend/.env)  where the browser loaded the page
 # Get either wrong and the page loads but every request fails.
 
 x-hardening: &hardening
@@ -42,16 +47,14 @@ services:
     secrets:
       - wordle_database_password
 
+    # The backend's own settings: CORS origin, sign-in, game tuning.
+    env_file: ./backend/.env
+
+    # Fixed by how the containers are wired together, so not left to the
+    # env file. These win over anything with the same name in it.
     environment:
-      WORDLE_DATA_DIR: /data
-      WORDLE_STORE: sqlite
-      WORDLE_ALLOWED_ORIGINS: ${WORDLE_ALLOWED_ORIGINS:-http://localhost:8080}
-      WORDLE_GAME_TTL_SECONDS: ${WORDLE_GAME_TTL_SECONDS:-14400}
-      # Sign-in. Leave the issuer empty for anonymous-only play. Any standard
-      # OpenID Connect provider works; see backend/ACCOUNTS.md.
-      WORDLE_AUTH_ISSUER: ${WORDLE_AUTH_ISSUER:-}
-      WORDLE_AUTH_AUDIENCE: ${WORDLE_AUTH_AUDIENCE:-}
-      WORDLE_PLAYER_STORE: postgres
+      WORDLE_ACTIVE_GAMES_DB_PATH: /data/games.db
+      WORDLE_ACTIVE_GAMES_STORE: sqlite
       WORDLE_DATABASE_URL: postgresql://wordle@db:5432/wordle
 
     # Games in progress. Survives `docker compose down`, image rebuilds and
@@ -117,9 +120,8 @@ services:
     ports:
       - "8080:8080"
 
-    environment:
-      # Rewritten into config.js when the container starts.
-      WORDLE_API_BASE: ${WORDLE_API_BASE:-http://localhost:8000}
+    # WORDLE_API_BASE, rewritten into config.js when the container starts.
+    env_file: ./frontend/.env
 
     read_only: true
     tmpfs:

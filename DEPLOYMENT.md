@@ -235,10 +235,11 @@ secret is the password for the PostgreSQL database that holds player accounts.
 
 ```bash
 cd /opt/wordle
-cp .env.example .env
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-Secrets go in files, not in `.env`. `docker inspect` and `/proc/<pid>/environ`
+Secrets go in files, not in either `.env`. `docker inspect` and `/proc/<pid>/environ`
 both show a container's environment; neither shows a mounted secret.
 
 ```bash
@@ -248,22 +249,24 @@ chmod 600 secrets/wordle_*
 ```
 
 To turn sign-in on, also set `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE`
-in `.env`. Setting up the identity provider is in
+in `backend/.env`. Setting up the identity provider is in
 [backend/ACCOUNTS.md](backend/ACCOUNTS.md). Sign-in through a provider needs
 the site on HTTPS (Option A, C or D below); plain HTTP works only for
 anonymous play.
 
-Everything else goes in `.env`:
+The two browser URLs go one in each file. Both are what the BROWSER sees.
+Fill them in after Step 6, when you know your real URLs.
 
 ```ini
-# Both of these are what the BROWSER sees. Fill them in after Step 6,
-# when you know your real URLs.
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=http://[your-ipv6]:8080
+
+# frontend/.env
 WORDLE_API_BASE=http://[your-ipv6]:8000
 ```
 
 ```bash
-chmod 600 .env
+chmod 600 backend/.env frontend/.env
 ```
 
 **These last two are the setting people get wrong.** They are not container
@@ -414,8 +417,9 @@ sudo tailscale funnel status                   # shows both public URLs
 Now fill in the two URLs, using the hostname Funnel printed:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=https://your-box.your-tailnet.ts.net
+# frontend/.env
 WORDLE_API_BASE=https://your-box.your-tailnet.ts.net:8443
 ```
 
@@ -438,8 +442,9 @@ You need **two** ports from your forwarded range. Say the panel forwards public
 `20001` to your `8080` and public `20002` to your `8000`:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=http://<shared-ipv4>:20001
+# frontend/.env
 WORDLE_API_BASE=http://<shared-ipv4>:20002
 ```
 
@@ -498,8 +503,9 @@ certificate — the only option that avoids the two-port dance:
 Then both URLs are the same origin, and CORS stops mattering:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=https://[2001:db8::1]
+# frontend/.env
 WORDLE_API_BASE=https://[2001:db8::1]
 ```
 
@@ -519,7 +525,7 @@ does not intend it for permanent use. Good for showing someone the site in the
 next ten minutes; not for keeping it up.
 
 Awkward here, because you would need a **second** tunnel for the API and both
-random URLs change on every restart, so `.env` goes stale each time. Fine for a
+random URLs change on every restart, so both `.env` files go stale each time. Fine for a
 ten-minute demo, painful beyond that. Use Option A if you want it to stay up.
 
 If your VPS ever loses outbound IPv4, add `--edge-ip-version 6`. `auto` picks
@@ -569,7 +575,8 @@ docker stats --no-stream              # what it is using
 cd /opt/wordle && git pull && docker compose up -d --build
 ```
 
-**Back up** `secrets/`, `.env`, the games volume and the player database:
+**Back up** `secrets/`, `backend/.env`, `frontend/.env`, the games volume and
+the player database:
 
 ```bash
 docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
@@ -610,7 +617,8 @@ networking, which is what makes this work on a Mac or Windows machine.
 restart wipes them and players get "that game expired" and a fresh board. Fine
 for a word game; know that it is the behaviour.
 
-**The two URLs in `.env` are browser URLs, not container URLs.** This is the
+**The two URLs in `backend/.env` and `frontend/.env` are browser URLs, not
+container URLs.** This is the
 single most common way to break the split setup. `WORDLE_API_BASE` must be
 reachable from a visitor's browser; `localhost` works only when the visitor is
 on the VPS itself. Change either URL and you must run `docker compose up -d`
@@ -667,8 +675,8 @@ After=network-online.target
 Type=exec
 User=wordle
 WorkingDirectory=/opt/wordle/backend
-EnvironmentFile=/opt/wordle/.env
-Environment=WORDLE_DATA_DIR=/var/lib/wordle
+EnvironmentFile=/opt/wordle/backend/.env
+Environment=WORDLE_ACTIVE_GAMES_DB_PATH=/var/lib/wordle/games.db
 ExecStart=/opt/wordle/backend/.venv/bin/uvicorn wordle.app:create_app \
   --factory --host :: --port 8000 --workers 1 \
   --proxy-headers --forwarded-allow-ips '*'

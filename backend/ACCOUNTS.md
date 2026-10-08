@@ -121,7 +121,7 @@ created_at    TIMESTAMPTZ            issuer         TEXT  \  UNIQUE together
    a Single Page Application, with the three connections enabled. It must ask
    for `audience=https://wordle-api` and `scope=openid profile email`, so the
    access token is meant for this API and can also read the player's profile.
-5. **Configure the API**, in `.env`:
+5. **Configure the API**, in `backend/.env`:
 
    ```
    WORDLE_AUTH_ISSUER=https://<your-tenant>.auth0.com/

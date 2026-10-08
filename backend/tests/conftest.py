@@ -37,11 +37,14 @@ def word_lists_dir(tmp_path) -> Path:
 
 @pytest.fixture
 def settings(word_lists_dir, tmp_path) -> Settings:
+    # _env_file=None: never read the developer's real backend/.env, which may
+    # turn sign-in on and point at a real database.
     return Settings(
+        _env_file=None,
         word_lists_dir=word_lists_dir,
         allowed_origins=[ORIGIN],
         # max_attempts left unset: games derive it from their word length.
-        data_dir=tmp_path / "state",
+        active_games_db_path=tmp_path / "state" / "games.db",
     )
 
 

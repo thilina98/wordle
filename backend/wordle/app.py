@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .accounts import Accounts, InMemoryPlayerRepository, PlayerRepository, SignInDisabled
+from .accounts import Accounts, SignInDisabled
 from .api import router as api_router
 from .config import Settings, get_settings
 from .game import MIN_ATTEMPTS, default_attempts
@@ -29,15 +29,16 @@ def _catalogue(settings: Settings) -> WordCatalogue:
     try:
         if settings.word_lists_dir:
             return WordCatalogue.from_directory(
-                settings.word_lists_dir, default_length=settings.word_length
+                settings.word_lists_dir, default_length=settings.default_word_length
             )
-        return WordCatalogue.packaged(default_length=settings.word_length)
+        return WordCatalogue.packaged(default_length=settings.default_word_length)
     except WordListError as exc:
-        if settings.word_length is not None and not settings.word_lists_dir:
+        if settings.default_word_length is not None and not settings.word_lists_dir:
             raise WordListError(
-                f"WORDLE_WORD_LENGTH={settings.word_length} is not among the shipped "
-                f"word lists. Point WORDLE_WORD_LISTS_DIR at a directory holding a "
-                f"{settings.word_length}/ list, or leave WORDLE_WORD_LENGTH unset. ({exc})"
+                f"WORDLE_DEFAULT_WORD_LENGTH={settings.default_word_length} is not among "
+                f"the shipped word lists. Point WORDLE_WORD_LISTS_DIR at a directory "
+                f"holding a {settings.default_word_length}/ list, or leave "
+                f"WORDLE_DEFAULT_WORD_LENGTH unset. ({exc})"
             ) from exc
         raise
 
@@ -59,32 +60,26 @@ def _check_every_length_is_playable(catalogue: WordCatalogue) -> None:
 
 def _game_store(settings: Settings, catalogue: WordCatalogue) -> GameStore:
     """Games on disk by default, so a container rebuild does not end them."""
-    if settings.store == "memory":
+    if settings.active_games_store == "memory":
         return InMemoryGameStore(
-            ttl_seconds=settings.game_ttl_seconds, max_games=settings.max_games
+            ttl_seconds=settings.active_games_ttl_seconds,
+            max_games=settings.active_games_max,
         )
     return SqliteGameStore(
-        settings.data_dir / "games.db",
+        settings.active_games_db_path,
         vocabulary_for=catalogue.vocabulary_for,
-        ttl_seconds=settings.game_ttl_seconds,
-        max_games=settings.max_games,
+        ttl_seconds=settings.active_games_ttl_seconds,
+        max_games=settings.active_games_max,
     )
-
-
-def _player_repository(settings: Settings) -> PlayerRepository:
-    """Imported lazily so a deployment without PostgreSQL needs no driver."""
-    if settings.player_store == "memory":
-        return InMemoryPlayerRepository()
-    from .accounts.postgres import PostgresPlayerRepository
-
-    return PostgresPlayerRepository(settings.database_url, password=settings.database_password)
 
 
 def _accounts(settings: Settings) -> Accounts | SignInDisabled:
     """Sign-in as configured, or anonymous play only."""
     if not settings.sign_in_enabled:
         return SignInDisabled()
+    # Imported here, so anonymous-only play never loads the database driver.
     from .accounts.oidc import OidcProvider
+    from .accounts.postgres import PostgresPlayerRepository
 
     return Accounts(
         OidcProvider(
@@ -92,7 +87,7 @@ def _accounts(settings: Settings) -> Accounts | SignInDisabled:
             settings.auth_audience,
             algorithms=settings.auth_algorithms,
         ),
-        _player_repository(settings),
+        PostgresPlayerRepository(settings.database_url, password=settings.database_password),
         link_verified_emails=settings.auth_link_verified_emails,
     )
 

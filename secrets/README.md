@@ -16,8 +16,8 @@ chmod 600 secrets/wordle_*
 
 The app reads this directory whether or not it is in Docker — `/run/secrets`
 inside a container, `secrets/` when run from source. **Secrets belong here and
-nowhere else.** Never in `.env`: that file is read by Docker Compose, so a
-secret in it becomes a container environment variable, and `docker inspect`
+nowhere else.** Never in `backend/.env` or `frontend/.env`: Docker Compose
+hands those to the containers as environment variables, and `docker inspect`
 prints those.
 
 PostgreSQL only reads the password when it creates a fresh database. Changing

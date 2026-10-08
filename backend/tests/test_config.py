@@ -28,12 +28,12 @@ def test_starts_with_no_secrets_at_all(monkeypatch, no_secrets):
 
 
 def test_reads_values_from_the_environment(monkeypatch):
-    monkeypatch.setenv("WORDLE_WORD_LENGTH", "6")
+    monkeypatch.setenv("WORDLE_DEFAULT_WORD_LENGTH", "6")
     monkeypatch.setenv("WORDLE_AUTH_ISSUER", "https://id.example.test/")
     monkeypatch.setenv("WORDLE_AUTH_AUDIENCE", "https://wordle-api")
     monkeypatch.setenv("WORDLE_DATABASE_URL", "postgresql://wordle@db/wordle")
     settings = Settings(_env_file=None)
-    assert settings.word_length == 6
+    assert settings.default_word_length == 6
     assert settings.sign_in_enabled is True
 
 
@@ -54,7 +54,7 @@ class TestSignInConfiguration:
         with pytest.raises(ValidationError, match="AUTH_AUDIENCE"):
             Settings(auth_issuer=self.ISSUER, _env_file=None, _secrets_dir=no_secrets)
 
-    def test_postgres_players_need_a_database_url(self, no_secrets):
+    def test_sign_in_needs_a_database_url(self, no_secrets):
         with pytest.raises(ValidationError, match="DATABASE_URL"):
             Settings(
                 auth_issuer=self.ISSUER,
@@ -63,27 +63,23 @@ class TestSignInConfiguration:
                 _secrets_dir=no_secrets,
             )
 
-    def test_in_memory_players_need_no_database(self, no_secrets):
-        settings = Settings(
-            auth_issuer=self.ISSUER,
-            auth_audience="api",
-            player_store="memory",
-            _env_file=None,
-            _secrets_dir=no_secrets,
-        )
-        assert settings.sign_in_enabled
-
     def test_algorithms_arrive_comma_separated(self, monkeypatch):
         monkeypatch.setenv("WORDLE_AUTH_ALGORITHMS", "RS256, ES256")
         assert Settings(_env_file=None).auth_algorithms == ["RS256", "ES256"]
 
-    def test_the_app_builds_real_sign_in_from_settings(self, settings):
-        # No network and no database: discovery is lazy, players in memory.
+    def test_the_app_builds_real_sign_in_from_settings(self, settings, monkeypatch):
+        # No network: discovery is lazy. No database: the Postgres adapter is
+        # swapped for the in-memory one, which takes no connection.
+        from wordle.accounts import InMemoryPlayerRepository, postgres
+
+        monkeypatch.setattr(
+            postgres, "PostgresPlayerRepository", lambda *a, **k: InMemoryPlayerRepository()
+        )
         configured = settings.model_copy(
             update={
                 "auth_issuer": self.ISSUER,
                 "auth_audience": "api",
-                "player_store": "memory",
+                "database_url": "postgresql://wordle@db/wordle",
             }
         )
         app = create_app(configured)

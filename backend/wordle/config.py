@@ -41,11 +41,11 @@ def _secrets_dir() -> str | None:
 
 
 class Settings(BaseSettings):
-    # Two candidate .env files so one file at the repo root serves both Docker
-    # and a local run from backend/. A backend/.env, if present, wins.
+    # backend/.env, when run from backend/. In Docker, compose hands the same
+    # file to the container as environment variables instead.
     model_config = SettingsConfigDict(
         env_prefix="WORDLE_",
-        env_file=("../.env", ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
         # One file per secret, named after the setting: wordle_database_password.
         # Kept out of .env and out of the environment -- `docker inspect`
@@ -78,11 +78,8 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- Players
-    player_store: Literal["postgres", "memory"] = Field(
-        default="postgres",
-        description="postgres keeps players; memory forgets them on restart",
-    )
+    # --- PostgreSQL: players, and everything else except games in progress.
+    # Only connected to when sign-in is on.
     database_url: str | None = Field(
         default=None,
         description="PostgreSQL connection URL, without the password.",
@@ -102,7 +99,7 @@ class Settings(BaseSettings):
     )
 
     # --- Game
-    word_length: int | None = Field(
+    default_word_length: int | None = Field(
         default=None,
         ge=2,
         description=(
@@ -110,14 +107,25 @@ class Settings(BaseSettings):
             "falling back to the shortest list installed."
         ),
     )
-    # --- Storage
-    store: Literal["memory", "sqlite"] = Field(
+    # --- Active games: games being played, in their own SQLite file, apart
+    # from the main database.
+    active_games_store: Literal["memory", "sqlite"] = Field(
         default="sqlite",
         description="sqlite keeps games across a restart; memory loses them",
     )
-    data_dir: Path = Field(
-        default=Path("data"),
-        description="Writable directory for the game database. Mount a volume here.",
+    active_games_db_path: Path = Field(
+        default=Path("data/games.db"),
+        description="The SQLite file. Its folder is created if missing. Mount a volume there.",
+    )
+    active_games_max: int = Field(
+        default=10_000,
+        ge=1,
+        description="Most games kept at once; the least recently played go first.",
+    )
+    active_games_ttl_seconds: int = Field(
+        default=60 * 60 * 4,
+        ge=60,
+        description="A game untouched this long is dropped.",
     )
 
     word_lists_dir: Path | None = Field(
@@ -127,10 +135,6 @@ class Settings(BaseSettings):
             "(5/answers.csv, 5/dictionary.csv, ...). None uses the shipped lists."
         ),
     )
-
-    # --- Limits
-    game_ttl_seconds: int = Field(default=60 * 60 * 4, ge=60)
-    max_games: int = Field(default=10_000, ge=1)
 
     @field_validator("allowed_origins", "auth_algorithms", mode="before")
     @classmethod
@@ -151,11 +155,8 @@ class Settings(BaseSettings):
             return self
         if not self.auth_audience:
             raise ValueError("WORDLE_AUTH_AUDIENCE is required when WORDLE_AUTH_ISSUER is set")
-        if self.player_store == "postgres" and not self.database_url:
-            raise ValueError(
-                "WORDLE_DATABASE_URL is required when sign-in is on and "
-                "WORDLE_PLAYER_STORE is postgres"
-            )
+        if not self.database_url:
+            raise ValueError("WORDLE_DATABASE_URL is required when WORDLE_AUTH_ISSUER is set")
         return self
 
 

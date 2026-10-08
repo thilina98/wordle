@@ -48,7 +48,8 @@ cd backend
 ../.venv/bin/poetry install --extras dev
 
 cd ..
-cp .env.example .env                  # non-secret config; defaults suit local
+cp backend/.env.example backend/.env   # backend settings; defaults suit local
+cp frontend/.env.example frontend/.env # frontend settings (Docker only)
 
 mkdir -p secrets                      # only needed for sign-in; see backend/ACCOUNTS.md
 python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
@@ -113,8 +114,8 @@ describe what the **browser** sees, not what the containers see.
 
 | Setting | Meaning | Set in |
 |---|---|---|
-| `WORDLE_API_BASE` | where the browser sends API calls | `.env` → `frontend/config.js` |
-| `WORDLE_ALLOWED_ORIGINS` | where the browser loaded the page from | `.env` → the API's CORS list |
+| `WORDLE_API_BASE` | where the browser sends API calls | `frontend/.env` → `frontend/config.js` |
+| `WORDLE_ALLOWED_ORIGINS` | where the browser loaded the page from | `backend/.env` → the API's CORS list |
 
 Get one wrong and the page loads but every request fails. In the browser
 console that shows up as a CORS error or "Cannot reach the server".
@@ -123,8 +124,11 @@ For local development the defaults already match: frontend on 8080, API on 8000.
 
 ## Configuration
 
-Every backend setting reads from a `WORDLE_`-prefixed environment variable, or
-from `.env` at the repo root. See [.env.example](.env.example).
+Each application has its own settings file; there is no shared one at the repo
+root. Every backend setting reads from a `WORDLE_`-prefixed environment
+variable, or from `backend/.env`. See
+[backend/.env.example](backend/.env.example) and
+[frontend/.env.example](frontend/.env.example).
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -132,32 +136,31 @@ from `.env` at the repo root. See [.env.example](.env.example).
 | `WORDLE_AUTH_AUDIENCE` | unset | This API's identifier at the provider. Required with an issuer. |
 | `WORDLE_AUTH_ALGORITHMS` | `RS256` | Accepted token signatures. Asymmetric only. |
 | `WORDLE_AUTH_LINK_VERIFIED_EMAILS` | `true` | Join sign-in methods that share a verified email. |
-| `WORDLE_PLAYER_STORE` | `postgres` | `memory` forgets players on restart. |
-| `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required for sign-in with `postgres`. |
+| `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required when sign-in is on. |
 | `WORDLE_DATABASE_PASSWORD` | unset | **From `secrets/`.** |
 | `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
-| `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
-| `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
+| `WORDLE_API_BASE` | `http://localhost:8000` | Frontend, in `frontend/.env`. |
+| `WORDLE_DEFAULT_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
-| `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
-| `WORDLE_DATA_DIR` | `data` | Where the game database lives. Mount a volume here. |
-| `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
-| `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
+| `WORDLE_ACTIVE_GAMES_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
+| `WORDLE_ACTIVE_GAMES_DB_PATH` | `data/games.db` | The SQLite file for games being played. Mount a volume on its folder. |
+| `WORDLE_ACTIVE_GAMES_TTL_SECONDS` | `14400` | A game untouched this long is dropped. |
+| `WORDLE_ACTIVE_GAMES_MAX` | `10000` | Most games kept at once; the least recently played go first. |
 
 The API needs no secrets to start. Half a sign-in configuration (an issuer
 without an audience, or no database URL) stops it at startup rather than at
 the first sign-in.
 
-**Secrets live in `secrets/`, never in `.env`** — one file per secret, the
-same directory in every environment (`/run/secrets` in Docker, `secrets/` from
-source). Compose reads `.env`, so a secret placed there becomes a container
-environment variable and `docker inspect` prints it.
+**Secrets live in `secrets/`, never in a `.env` file** — one file per secret,
+the same directory in every environment (`/run/secrets` in Docker, `secrets/`
+from source). Compose hands each `.env` file to its container as environment
+variables, so a secret placed there would show up in `docker inspect`.
 
-`.env` holds the per-machine, non-secret settings: which URLs the browser uses,
-and the timeouts. It is gitignored, so your laptop's copy and the VPS copy
-differ. See [secrets/README.md](secrets/README.md) and
-[.env.example](.env.example).
+`backend/.env` and `frontend/.env` hold the per-machine, non-secret settings:
+which URLs the browser uses, sign-in, and the timeouts. Both are gitignored, so
+your laptop's copies and the VPS copies differ. See
+[secrets/README.md](secrets/README.md).
 
 ## API
 
@@ -251,7 +254,7 @@ POST /api/games   {"word_length": 6}
 Only the shipped five-letter lists are installed, so that is the only length
 available out of the box. A request for a length with no lists is a 400 naming
 the lengths that do exist, and an omitted `word_length` uses
-`WORDLE_WORD_LENGTH`.
+`WORDLE_DEFAULT_WORD_LENGTH`.
 
 ## Scoring
 
@@ -317,7 +320,7 @@ POST /api/games   {}
 
 | Field | Default | Bound by |
 |---|---|---|
-| `word_length` | `WORDLE_WORD_LENGTH` | The word lists installed. |
+| `word_length` | `WORDLE_DEFAULT_WORD_LENGTH` | The word lists installed. |
 | `max_attempts` | One guess per letter | 2 to the length plus two. |
 
 **Attempts follow the word.** A five-letter game gets five guesses and allows
@@ -354,12 +357,12 @@ Swapping in a database means reimplementing `WordRepository` and nothing else.
 
 ## Storage
 
-Games are the only state the app has. By default they go in SQLite under
-`WORDLE_DATA_DIR`, so destroying and rebuilding the container does not end
-anyone's game. In Docker that directory is a named volume, `wordle-data`, which
+Games being played go in their own SQLite file, `WORDLE_ACTIVE_GAMES_DB_PATH`,
+apart from the main PostgreSQL database, so destroying and rebuilding the
+container does not end anyone's game. In Docker that directory is a named volume, `wordle-data`, which
 outlives `docker compose down` and only goes away with `docker volume rm`.
 
-`WORDLE_STORE=memory` switches to the in-process store, which is faster and
+`WORDLE_ACTIVE_GAMES_STORE=memory` switches to the in-process store, which is faster and
 loses everything on restart. Both implement the same `GameStore` protocol and
 run against the same contract tests.
 
