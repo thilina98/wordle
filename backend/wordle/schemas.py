@@ -10,15 +10,6 @@ from .game import MIN_ATTEMPTS, Colour, GameState
 from .scoring import Score, score_for
 
 
-class LoginRequest(BaseModel):
-    password: str = Field(max_length=256)
-
-
-class TokenResponse(BaseModel):
-    token: str
-    expires_in: int
-
-
 class CreateGameRequest(BaseModel):
     """Options for a new game. Every field optional, so an empty body works."""
 

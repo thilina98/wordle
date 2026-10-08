@@ -1,31 +1,22 @@
 """The whole HTTP surface. This service serves JSON only: the frontend is a
-separate application on its own origin and fetches everything from here."""
+separate application on its own origin and fetches everything from here.
+
+Every route is open: there is no password. The unguessable game id is the only
+key to a game.
+"""
 
 from __future__ import annotations
 
 import time
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 
-from .config import Settings
 from .game import GameOverError, GameState, InvalidGuessError
-from .schemas import CreateGameRequest, GameView, GuessRequest, LoginRequest, TokenResponse
-from .security import (
-    LoginThrottle,
-    TokenError,
-    bearer_token,
-    issue_token,
-    verify_password,
-    verify_token,
-)
+from .schemas import CreateGameRequest, GameView, GuessRequest
 from .store import GameStore
 from .words import WordCatalogue
 
 router = APIRouter(prefix="/api", tags=["wordle"])
-
-
-def _settings(request: Request) -> Settings:
-    return request.app.state.settings
 
 
 def _store(request: Request) -> GameStore:
@@ -34,23 +25,6 @@ def _store(request: Request) -> GameStore:
 
 def _catalogue(request: Request) -> WordCatalogue:
     return request.app.state.catalogue
-
-
-def _client_id(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
-
-
-def require_token(request: Request, authorization: str | None = Header(default=None)) -> None:
-    """Gate for every game route. 401 with no detail about why beyond the basics."""
-    settings = _settings(request)
-    try:
-        verify_token(bearer_token(authorization), settings.secret_key, settings.token_max_age)
-    except TokenError as exc:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            str(exc),
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from exc
 
 
 def _now() -> float:
@@ -72,41 +46,6 @@ def _load_game(request: Request, game_id: str) -> GameState:
     return game
 
 
-# --- Access ---------------------------------------------------------------
-
-
-@router.post("/login", response_model=TokenResponse)
-def login(request: Request, payload: LoginRequest) -> TokenResponse:
-    """Exchange the shared password for a signed token.
-
-    The only unauthenticated route besides the health check.
-    """
-    settings = _settings(request)
-    throttle: LoginThrottle = request.app.state.throttle
-    client = _client_id(request)
-
-    if throttle.is_locked(client):
-        wait = int(throttle.retry_after(client)) + 1
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            f"Too many attempts. Try again in {wait} seconds.",
-            headers={"Retry-After": str(wait)},
-        )
-
-    if not verify_password(payload.password, settings.password):
-        throttle.record_failure(client)
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password")
-
-    throttle.record_success(client)
-    return TokenResponse(token=issue_token(settings.secret_key), expires_in=settings.token_max_age)
-
-
-@router.get("/session", dependencies=[Depends(require_token)])
-def check_session() -> dict[str, bool]:
-    """Cheap way for the frontend to ask whether its stored token still works."""
-    return {"valid": True}
-
-
 # --- Game -----------------------------------------------------------------
 
 
@@ -114,7 +53,6 @@ def check_session() -> dict[str, bool]:
     "/games",
     response_model=GameView,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_token)],
 )
 def create_game(
     request: Request,
@@ -147,15 +85,13 @@ def create_game(
     return GameView.of(_store(request).create(game), game)
 
 
-@router.get("/games/{game_id}", response_model=GameView, dependencies=[Depends(require_token)])
+@router.get("/games/{game_id}", response_model=GameView)
 def read_game(request: Request, game_id: str) -> GameView:
     """Current board, for resuming after a reload."""
     return GameView.of(game_id, _load_game(request, game_id))
 
 
-@router.post(
-    "/games/{game_id}/start", response_model=GameView, dependencies=[Depends(require_token)]
-)
+@router.post("/games/{game_id}/start", response_model=GameView)
 def start_game(request: Request, game_id: str) -> GameView:
     """Start this game's clock, on the player's first keystroke.
 
@@ -170,9 +106,7 @@ def start_game(request: Request, game_id: str) -> GameView:
     return GameView.of(game_id, game)
 
 
-@router.post(
-    "/games/{game_id}/guesses", response_model=GameView, dependencies=[Depends(require_token)]
-)
+@router.post("/games/{game_id}/guesses", response_model=GameView)
 def submit_guess(request: Request, game_id: str, payload: GuessRequest) -> GameView:
     """Score one guess and return the updated board."""
     game = _load_game(request, game_id)

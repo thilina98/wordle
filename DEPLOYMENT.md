@@ -40,11 +40,9 @@ never 80 or 443. Two consequences:
 - You cannot get an HTTPS certificate for that address, because you cannot
   prove you own it.
 
-**Why fact 2 matters more than it looks.** This site is protected by a password.
-Over plain HTTP, that password crosses the network in clear text. Anyone
-between the visitor and your VPS can read it — a café Wi-Fi, an ISP, a hop in
-between. If you only ever open the site from your own network, that risk is
-yours to take. If you send the link to other people, get HTTPS.
+**Why fact 2 matters.** Over plain HTTP, everything crosses the network in clear
+text and can be altered on the way. The game holds nothing private, so for a
+quick test that is fine; if you send the link to other people, get HTTPS.
 
 ---
 
@@ -228,27 +226,13 @@ cd /opt/wordle
 
 ---
 
-## Step 3: set the two secrets
+## Step 3: create `.env`
 
-The app will not start without these. That is on purpose — a default password is
-not a password.
+There are no secrets to set: anyone can play.
 
 ```bash
 cd /opt/wordle
 cp .env.example .env
-
-# Generate a real signing key
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-```
-
-Secrets go in files, not in `.env`. `docker inspect` and `/proc/<pid>/environ`
-both show a container's environment; neither shows a mounted secret.
-
-```bash
-mkdir -p secrets
-printf '%s' 'the-password-you-will-share' > secrets/wordle_password
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
-chmod 600 secrets/wordle_*
 ```
 
 Everything else goes in `.env`:
@@ -273,8 +257,8 @@ addresses. They are the URLs a visitor's browser uses.
   where the browser loaded the page from — scheme, host and port, no trailing
   slash.
 
-Symptom of getting them wrong: the password page loads fine, then logging in
-does nothing. The browser console shows a CORS error, or the page says
+Symptom of getting them wrong: the page loads fine, then starting a game does
+nothing. The browser console shows a CORS error, or the page says
 "Cannot reach the server". Comma-separate the origins if you have more than one
 way in (an IPv6 URL and a Tailscale URL, say).
 
@@ -300,7 +284,6 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/   # web: expect 200
 - **Both containers run as non-root** with a read-only root filesystem, all
   Linux capabilities dropped, and `no-new-privileges`. The only writable paths
   are the volume and a small tmpfs.
-- **Secrets are mounted files**, not environment variables.
 
 Verify all of that after it starts:
 
@@ -308,8 +291,6 @@ Verify all of that after it starts:
 docker exec wordle-api id                     # uid=10001, not root
 docker exec wordle-api touch /app/x           # must fail: read-only
 docker exec wordle-api touch /data/x          # must succeed: the volume
-docker exec wordle-api ls -l /run/secrets/    # the two secret files
-docker inspect wordle-api --format '{{json .Config.Env}}' | grep -c PASSWORD   # 0
 ```
 
 ### Ports, and whether you need the production override
@@ -428,8 +409,7 @@ Worth knowing:
 
 - The name is always `*.ts.net`. No custom domain.
 - Funnel is still labelled beta.
-- Anyone with the link can reach the page. That is what you want here — your
-  password is what keeps them out.
+- Anyone with the link can reach the page and play. That is what you want here.
 
 ### Option B — the NAT IPv4 port (simplest, no HTTPS)
 
@@ -444,9 +424,8 @@ WORDLE_API_BASE=http://<shared-ipv4>:20002
 
 Then the site is at `http://<shared-ipv4>:20001`.
 
-Nothing to install. Works for every visitor. But the password travels in clear
-text, so treat this as a "just me, just testing" option, or pair it with a
-password you use nowhere else.
+Nothing to install. Works for every visitor. But it is plain HTTP, so treat
+this as a "just me, just testing" option.
 
 **If your provider cannot choose the internal port.** Some panels forward
 `public 20001 → your 20001` with no way to map it to 8080. Then the containers
@@ -539,10 +518,6 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
 
 # The API must serve no pages: 404
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/
-
-# A real login, end to end
-curl -s -X POST localhost:8000/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"YOUR-PASSWORD"}'
 ```
 
 Then check the frontend picked up the right API base:
@@ -553,7 +528,7 @@ curl -s localhost:8080/config.js     # must show your public API URL
 
 Finally open the site on your phone, on mobile data rather than your own Wi-Fi.
 That is the test that catches "works for me only" — especially with Option C.
-If the page loads but login does nothing, open the browser console: a CORS
+If the page loads but nothing works, open the browser console: a CORS
 error means `WORDLE_ALLOWED_ORIGINS` does not match where the page came from.
 
 ---
@@ -568,9 +543,6 @@ docker stats --no-stream              # what it is using
 
 # Update after pushing changes
 cd /opt/wordle && git pull && docker compose up -d --build
-
-# Change the password. Everyone is logged out.
-printf '%s' 'new-password' > secrets/wordle_password && docker compose up -d
 ```
 
 **Back up** `secrets/`, `.env`, and the volume:
@@ -629,8 +601,7 @@ the console says so. Both must be the same scheme.
 written, because it uses host networking. It becomes an issue the moment
 someone switches it to `-p`.
 
-**The login throttle is per process.** Ten wrong passwords locks that IP out for
-five minutes. It is a speed bump, not a rate limiter. If the site is on the open
+**There is no rate limit.** Every route is open. If the site is on the open
 internet and you care, put a real limit in front of it — Cloudflare or Caddy.
 
 **Hermes Agent and Wordle both want to be up.** Give Wordle the 512 MB limit the
@@ -684,8 +655,7 @@ ReadWritePaths=/var/lib/wordle
 WantedBy=multi-user.target
 ```
 
-Without Docker there are no mounted secrets, so put the password and key in
-`/opt/wordle/.env` and `chmod 600` it.
+Without Docker the settings come from `/opt/wordle/.env`; no secrets are needed.
 
 ```bash
 sudo useradd --system --no-create-home wordle

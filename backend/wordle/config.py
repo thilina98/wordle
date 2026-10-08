@@ -1,8 +1,7 @@
 """Settings, read from the environment.
 
 Every value is overridable with a WORDLE_-prefixed environment variable, e.g.
-WORDLE_PASSWORD. Secrets have no defaults: the app refuses to start without them
-rather than falling back to something guessable.
+WORDLE_WORD_LENGTH. Nothing is required: the defaults run a playable game.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-# Where the password and signing key live, one file each. Secrets are never
+# Where secrets live, one file each. Secrets are never
 # written down twice, so the same directory serves Docker and a run from
 # source; only its location differs.
 _SECRET_LOCATIONS = (
@@ -44,19 +43,13 @@ class Settings(BaseSettings):
         env_prefix="WORDLE_",
         env_file=("../.env", ".env"),
         env_file_encoding="utf-8",
-        # One file per secret, named after the setting: wordle_password,
-        # wordle_secret_key. Kept out of .env and out of the environment --
+        # One file per secret, named after the setting. None are needed at the
+        # moment; the directory is read so one can be added without code.
+        # Kept out of .env and out of the environment --
         # `docker inspect` prints the environment, not a file's contents.
         secrets_dir=_secrets_dir(),
         extra="ignore",
     )
-
-    # --- Secrets. No defaults on purpose.
-    password: str = Field(min_length=1, description="Shared password for API access")
-    secret_key: str = Field(min_length=16, description="Key signing the access token")
-
-    # --- Access token
-    token_max_age: int = Field(default=60 * 60 * 12, ge=60, description="Token lifetime, seconds")
 
     # --- CORS. The frontend is a separate origin, so it must be named here.
     # NoDecode: without it pydantic-settings JSON-decodes the value straight
@@ -97,8 +90,6 @@ class Settings(BaseSettings):
     # --- Limits
     game_ttl_seconds: int = Field(default=60 * 60 * 4, ge=60)
     max_games: int = Field(default=10_000, ge=1)
-    login_max_failures: int = Field(default=10, ge=1)
-    login_lockout_seconds: int = Field(default=300, ge=1)
 
     @field_validator("allowed_origins", mode="before")
     @classmethod

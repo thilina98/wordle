@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from .api import router as api_router
 from .config import Settings, get_settings
 from .game import MIN_ATTEMPTS, default_attempts
-from .security import LoginThrottle
 from .store import GameStore, InMemoryGameStore, SqliteGameStore
 from .words import WordCatalogue, WordListError
 
@@ -96,18 +95,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.catalogue = catalogue
     app.state.store = _game_store(settings, catalogue)
-    app.state.throttle = LoginThrottle(
-        max_failures=settings.login_max_failures,
-        lockout_seconds=settings.login_lockout_seconds,
-    )
 
-    # Named origins only. The token travels in a header, not a cookie, so
-    # credentialed CORS is not needed and "*" would be a needless invitation.
+    # Named origins only. Nothing travels in a cookie, so credentialed CORS is
+    # not needed, and "*" would be a needless invitation.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.allowed_origins,
         allow_methods=["GET", "POST"],
-        allow_headers=["Authorization", "Content-Type"],
+        allow_headers=["Content-Type"],
     )
 
     app.include_router(api_router)

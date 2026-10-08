@@ -104,3 +104,9 @@ refused. One list cannot do both jobs.
 
 Word lists stay CSV; the `WordRepository` seam is where a DB goes. Game store is
 in-memory; the `GameStore` protocol is where Redis goes.
+
+## Later: the shared password was removed
+
+The game is open to anyone. `security.py`, `/api/login`, `/api/session`, the
+login throttle and both secrets are gone, and so is the password screen in the
+frontend. The sections above that describe the password are history.

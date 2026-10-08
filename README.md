@@ -1,7 +1,7 @@
 # Wordle
 
 Five letters, five guesses, colour-coded feedback. Plays on a phone or with a
-physical keyboard. Protected by one shared password.
+physical keyboard. Open to anyone: there is no password.
 
 One repository, two applications. They are built, run and deployed separately
 and share nothing but the HTTP contract between them.
@@ -48,11 +48,6 @@ cd backend
 
 cd ..
 cp .env.example .env                  # non-secret config; defaults suit local
-
-mkdir -p secrets                      # the two secrets, one file each
-printf '%s' 'pick-a-password' > secrets/wordle_password
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
-chmod 600 secrets/wordle_*
 ```
 
 **Terminal 1 — the API:**
@@ -69,7 +64,7 @@ cd frontend
 python3 -m http.server 8080
 ```
 
-Open **http://localhost:8080** and enter the password from `secrets/wordle_password`.
+Open **http://localhost:8080** and play.
 
 The frontend needs no build step and no Node. Any static server will do;
 `http.server` is just the one that is already installed.
@@ -127,23 +122,17 @@ from `.env` at the repo root. See [.env.example](.env.example).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `WORDLE_PASSWORD` | — | Required. Shared password. **From `secrets/`.** |
-| `WORDLE_SECRET_KEY` | — | Required, 16+ chars. Signs the token. **From `secrets/`.** |
-| `WORDLE_SECRETS_DIR` | auto | Override where the two secret files are found. |
+| `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. None are needed today. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
-| `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
 | `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
 | `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
 | `WORDLE_DATA_DIR` | `data` | Where the game database lives. Mount a volume here. |
 | `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
 | `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
-| `WORDLE_LOGIN_MAX_FAILURES` | `10` | Failures before a lockout. |
-| `WORDLE_LOGIN_LOCKOUT_SECONDS` | `300` | How long the lockout lasts. |
 
-The API refuses to start without a password and a secret key. There is no
-fallback for either, because a default secret is not a secret.
+Nothing is required: the defaults run a playable game.
 
 **Secrets live in `secrets/`, never in `.env`** — one file per secret, the
 same directory in every environment (`/run/secrets` in Docker, `secrets/` from
@@ -151,30 +140,24 @@ source). Compose reads `.env`, so a secret placed there becomes a container
 environment variable and `docker inspect` prints it.
 
 `.env` holds the per-machine, non-secret settings: which URLs the browser uses,
-and the timeouts. It is gitignored, so your laptop's copy and the VPS copy
+and the timeouts. There are no secrets at the moment. It is gitignored, so your laptop's copy and the VPS copy
 differ. See [secrets/README.md](secrets/README.md) and
 [.env.example](.env.example).
 
 ## API
 
-JSON everywhere. Every route except `/healthz` and `/api/login` needs
-`Authorization: Bearer <token>`.
+JSON everywhere. Every route is open; there is no password or token.
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | Liveness. Public. |
-| `POST` | `/api/login` | Password in, token out. Public. |
-| `GET` | `/api/session` | Is my stored token still good? |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
 | `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |
 | `POST` | `/api/games/{id}/guesses` | Score a guess. |
 
 ```bash
-TOKEN=$(curl -s localhost:8000/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"'"$WORDLE_PASSWORD"'"}' | jq -r .token)
-
-curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8000/api/games
 ```
 
 A board looks like this. `answer` and `score` stay `null` until the game ends:
@@ -197,27 +180,14 @@ A board looks like this. `answer` and `score` stay `null` until the game ends:
 Guess errors are specific, so the page can say something useful: `400` with
 `"Enter a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
 letters only"`. A rejected guess costs no attempt. `409` means the game is over,
-`404` that it expired or never existed, `401` that the token is missing, forged
-or stale.
+`404` that it expired or never existed.
 
 ## How access works
 
-There are no accounts. `POST /api/login` checks the shared password with
-`hmac.compare_digest` and returns a token signed with `WORDLE_SECRET_KEY` and
-stamped with the time. Every later request carries it in an `Authorization`
-header; the API verifies the signature and the age.
-
-A token, not a cookie, because the two halves are separate origins. Cookies
-across origins need `SameSite=None; Secure`, which needs HTTPS — awkward when
-the deployment target is a bare IP address over plain HTTP.
-
-The token is stored in `localStorage`, so it survives a reload. It is readable
-by anything running on the page, which is the same thing that is true of the
-password box itself. There is no user data behind it.
-
-Because the frontend is served separately, its HTML and JS are public. They
-contain no answers and no password, and every route that matters is gated. What
-the password protects is playing, not downloading an empty board.
+There is none to speak of: anyone who can reach the page can play. A game is
+reached by its id, which is random and unguessable, so one player cannot stumble
+into another's board. The answer is never sent until the game is over, so the
+open frontend cannot be used to cheat.
 
 ## Word lists
 
@@ -366,9 +336,7 @@ run against the same contract tests.
 
 ## Known limits
 
-- **Run exactly one worker.** SQLite takes one writer, and the login throttle
-  is per process. Scaling out means Redis or Postgres behind the `GameStore`
-  protocol.
-- **The login throttle is per process** — a speed bump, not a real rate limit.
-  Put one at the reverse proxy for an internet-facing deployment.
-- **One shared password**, no accounts. Everyone who has it sees the same game.
+- **Run exactly one worker.** SQLite takes one writer. Scaling out means Redis
+  or Postgres behind the `GameStore` protocol.
+- **No rate limit.** Every route is open, so put one at the reverse proxy for
+  an internet-facing deployment.

@@ -133,12 +133,7 @@ function keyboardLayout(config = KEYBOARD) {
 }
 
 const el = {
-  gate: document.getElementById('gate'),
-  loginForm: document.getElementById('login-form'),
-  password: document.getElementById('password'),
-  loginError: document.getElementById('login-error'),
   game: document.getElementById('game'),
-  signout: document.getElementById('signout'),
   board: document.getElementById('board'),
   keyboard: document.getElementById('keyboard'),
   toast: document.getElementById('toast'),
@@ -168,29 +163,6 @@ function lockInput(ms) {
   busyTimer = window.setTimeout(() => {
     busy = false;
   }, ms);
-}
-
-// --- Screens --------------------------------------------------------------
-
-function showGate(message = '') {
-  el.game.hidden = true;
-  el.gate.hidden = false;
-  el.loginError.textContent = message;
-  el.loginError.hidden = !message;
-  el.password.value = '';
-  el.password.focus();
-}
-
-function showGame() {
-  el.gate.hidden = true;
-  el.game.hidden = false;
-}
-
-/** Called whenever the API says our token is no longer good. */
-function sessionLost() {
-  WordleApi.logout();
-  view = null;
-  showGate('Session expired. Enter the password again.');
 }
 
 // --- Rendering ------------------------------------------------------------
@@ -409,9 +381,7 @@ async function submit() {
   } catch (error) {
     // On success lockInput owns `busy`; on failure release it right away.
     busy = false;
-    if (error.status === 401) {
-      sessionLost();
-    } else if (error.status === 400) {
+    if (error.status === 400) {
       toast(error.message, 'error');   // e.g. "Enter a valid word"
       rejectRow();
     } else if (error.status === 404) {
@@ -438,10 +408,8 @@ async function start(force = false) {
 
   view = null;
   if (saved) {
-    view = await WordleApi.readGame(saved).catch((error) => {
-      if (error.status === 401) throw error;
-      return null;   // expired or unknown: just deal a new one
-    });
+    // Expired or unknown: just deal a new one.
+    view = await WordleApi.readGame(saved).catch(() => null);
   }
   if (!view) {
     view = await WordleApi.createGame();
@@ -463,54 +431,15 @@ async function start(force = false) {
   if (view.is_over) showResult();
 }
 
-/** Enter the game, handling a token that turned out to be stale. */
-async function enterGame() {
-  showGame();
-  try {
-    await start();
-  } catch (error) {
-    if (error.status === 401) sessionLost();
-    else toast(error.message, 'error');
-  }
-}
-
-el.loginForm.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const button = el.loginForm.querySelector('button');
-  button.disabled = true;
-  try {
-    await WordleApi.login(el.password.value);
-    el.loginError.hidden = true;
-    await enterGame();
-  } catch (error) {
-    el.loginError.textContent =
-      error.status === 401 ? 'Wrong password.' : error.message;
-    el.loginError.hidden = false;
-    el.password.select();
-  } finally {
-    button.disabled = false;
-  }
-});
-
-el.signout.addEventListener('click', () => {
-  WordleApi.logout();
-  view = null;
-  showGate();
-});
-
 el.again.addEventListener('click', () => {
-  start(true).catch((error) => {
-    if (error.status === 401) sessionLost();
-    else toast(error.message, 'error');
-  });
+  start(true).catch((error) => toast(error.message, 'error'));
 });
 
 document.addEventListener('keydown', (event) => {
   if (event.ctrlKey || event.metaKey || event.altKey) return;
-  if (el.game.hidden) return;   // the gate owns the keyboard while it is up
   const key = event.key;
 
-  // A focused button owns its own Enter and Space: "Play again", "Sign out".
+  // A focused button owns its own Enter and Space: "Play again".
   if (key === 'Enter' && event.target instanceof HTMLButtonElement) return;
 
   if (key === 'Enter' || key === 'Backspace' || /^[a-zA-Z]$/.test(key)) {
@@ -521,7 +450,4 @@ document.addEventListener('keydown', (event) => {
 
 buildKeyboard();
 
-// Skip the password screen if the stored token is still good.
-WordleApi.sessionIsValid()
-  .then((valid) => (valid ? enterGame() : showGate()))
-  .catch(() => showGate('Cannot reach the server.'));
+start().catch((error) => toast(error.message, 'error'));

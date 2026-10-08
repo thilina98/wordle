@@ -8,8 +8,6 @@ from fastapi.testclient import TestClient
 from wordle.app import create_app
 from wordle.config import Settings
 
-PASSWORD = "open-sesame"
-SECRET_KEY = "test-secret-key-at-least-16"
 ORIGIN = "http://localhost:8080"
 ANSWERS = ["crane", "state", "tasty", "abbey", "geese"]
 # Valid guesses that are deliberately not answers, so tests can tell the two
@@ -38,8 +36,6 @@ def word_lists_dir(tmp_path) -> Path:
 @pytest.fixture
 def settings(word_lists_dir, tmp_path) -> Settings:
     return Settings(
-        password=PASSWORD,
-        secret_key=SECRET_KEY,
         word_lists_dir=word_lists_dir,
         allowed_origins=[ORIGIN],
         # max_attempts left unset: games derive it from their word length.
@@ -58,23 +54,9 @@ def app(settings):
 
 
 @pytest.fixture
-def anon(app) -> TestClient:
-    """Client with no token."""
-    return TestClient(app)
-
-
-def obtain_token(client: TestClient, password: str = PASSWORD) -> str:
-    response = client.post("/api/login", json={"password": password})
-    assert response.status_code == 200, response.text
-    return response.json()["token"]
-
-
-@pytest.fixture
 def client(app) -> TestClient:
-    """Client carrying a valid token on every request."""
-    client = TestClient(app)
-    client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
-    return client
+    """A player. There is no password, so every client is just a client."""
+    return TestClient(app)
 
 
 @pytest.fixture
@@ -86,13 +68,10 @@ def make_client():
     """
     built = []
 
-    def build(settings: Settings, login: bool = True) -> TestClient:
+    def build(settings: Settings) -> TestClient:
         app = create_app(settings)
         built.append(app)
-        client = TestClient(app)
-        if login:
-            client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
-        return client
+        return TestClient(app)
 
     yield build
     for app in built:

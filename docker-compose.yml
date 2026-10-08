@@ -35,20 +35,12 @@ services:
     ports:
       - "8000:8000"
 
-    # Secrets as files, not environment variables: `docker inspect` and
-    # /proc/<pid>/environ both expose the environment, neither exposes these.
-    secrets:
-      - wordle_password
-      - wordle_secret_key
-
     environment:
       WORDLE_DATA_DIR: /data
       WORDLE_STORE: sqlite
       WORDLE_ALLOWED_ORIGINS: ${WORDLE_ALLOWED_ORIGINS:-http://localhost:8080}
-      WORDLE_TOKEN_MAX_AGE: ${WORDLE_TOKEN_MAX_AGE:-43200}
       WORDLE_MAX_ATTEMPTS: ${WORDLE_MAX_ATTEMPTS:-5}
       WORDLE_GAME_TTL_SECONDS: ${WORDLE_GAME_TTL_SECONDS:-14400}
-      WORDLE_LOGIN_MAX_FAILURES: ${WORDLE_LOGIN_MAX_FAILURES:-10}
 
     # Games in progress. Survives `docker compose down`, image rebuilds and
     # the container being destroyed. Removed only by `docker volume rm`.
@@ -103,12 +95,6 @@ services:
       resources:
         limits: { memory: 64M, cpus: "0.5" }
 
-
-secrets:
-  wordle_password:
-    file: ./secrets/wordle_password
-  wordle_secret_key:
-    file: ./secrets/wordle_secret_key
 
 volumes:
   wordle-data:
