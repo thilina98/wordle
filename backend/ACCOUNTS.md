@@ -77,6 +77,16 @@ a game that does not exist (404). An unowned (anonymous) game is visible to
 anyone with its id. A signed-in player can still finish a game they started
 anonymously.
 
+### Deleting a player
+
+`DELETE /api/players/me` removes the player, every sign-in identity that
+points at them, and every game they own. It answers 204, or 503 with nothing
+deleted if the database is down.
+
+It does not delete the account at the identity provider: that would tie this
+code to one provider's admin API. So the frontend must sign the player out
+right after; the same token used again signs in as a new, empty player.
+
 ## Database schema
 
 `wordle/accounts/migrations/0001_players.sql`. Migrations run automatically

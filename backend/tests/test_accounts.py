@@ -161,6 +161,37 @@ class TestRepositoryContract:
         player = repository.register(self.ME, Profile(), "nobody@example.com")
         assert repository.find(self.ME) == player
 
+    def test_delete_forgets_the_player_and_their_identities(self, repository):
+        repository.register(self.ME, Profile(name="Ada"), None)
+        player = repository.find(self.ME)
+        repository.delete(player.player_id)
+        assert repository.find(self.ME) is None
+
+    def test_delete_is_idempotent(self, repository):
+        player = repository.register(self.ME, Profile(), None)
+        repository.delete(player.player_id)
+        repository.delete(player.player_id)
+
+    def test_delete_leaves_other_players_alone(self, repository):
+        other = Identity(ISSUER, "auth0|2")
+        repository.register(self.ME, Profile(), None)
+        kept = repository.register(other, Profile(), None)
+        repository.delete(repository.find(self.ME).player_id)
+        assert repository.find(other) == kept
+
+    def test_signing_in_after_delete_is_a_new_player(self, repository):
+        before = repository.register(self.ME, Profile(), None)
+        repository.delete(before.player_id)
+        after = repository.register(self.ME, Profile(), None)
+        assert after.player_id != before.player_id
+
+    def test_a_deleted_players_email_no_longer_links(self, repository):
+        email = Profile(email="ada@example.com", email_verified=True)
+        old = repository.register(self.ME, email, None)
+        repository.delete(old.player_id)
+        other = Identity(ISSUER, "github|9")
+        assert repository.register(other, email, "ada@example.com").player_id != old.player_id
+
     def test_racing_registrations_of_one_identity_make_one_player(self, repository):
         results, barrier = [], threading.Barrier(8)
 

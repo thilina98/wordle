@@ -171,6 +171,7 @@ JSON everywhere. No route needs a token. Send `Authorization: Bearer <token>`
 |---|---|---|
 | `GET` | `/healthz` | Liveness. |
 | `GET` | `/api/players/me` | The signed-in player. The first call registers them. Token required. |
+| `DELETE` | `/api/players/me` | Delete the signed-in player and their games. Token required. |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
 | `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |

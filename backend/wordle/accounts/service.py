@@ -89,6 +89,14 @@ class Accounts:
         link_email = profile.verified_email if self._link_verified_emails else None
         return self._players.register(identity, profile, link_email)
 
+    def delete(self, player: Player) -> None:
+        """Remove the player and all their sign-in identities.
+
+        Only our records go: the account at the identity provider stays, so
+        signing in there again creates a new, empty player.
+        """
+        self._players.delete(player.player_id)
+
     def close(self) -> None:
         """Release the player store's connections, if it holds any."""
         close = getattr(self._players, "close", None)
@@ -106,4 +114,7 @@ class SignInDisabled:
     def identify(self, authorization: str | None) -> Player | None:
         if authorization is None:
             return None
+        raise AuthenticationError("Sign-in is not enabled on this server")
+
+    def delete(self, player: Player) -> None:
         raise AuthenticationError("Sign-in is not enabled on this server")

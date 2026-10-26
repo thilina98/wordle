@@ -55,6 +55,10 @@ class GameStore(Protocol):
         """Remove a game. Does nothing if it is already gone."""
         ...
 
+    def delete_owned_by(self, owner: str) -> int:
+        """Remove every game this player owns. Returns how many went."""
+        ...
+
 
 def _visible(owner: str | None, viewer: str | None) -> bool:
     """Anyone may see an unowned game; only its owner may see an owned one."""
@@ -120,6 +124,13 @@ class InMemoryGameStore:
     def delete(self, game_id: str) -> None:
         with self._lock:
             self._entries.pop(game_id, None)
+
+    def delete_owned_by(self, owner: str) -> int:
+        with self._lock:
+            owned = [gid for gid, e in self._entries.items() if e.owner == owner]
+            for game_id in owned:
+                del self._entries[game_id]
+            return len(owned)
 
     def _purge_expired(self) -> None:
         """Caller holds the lock."""
@@ -293,6 +304,10 @@ class SqliteGameStore:
     def delete(self, game_id: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
+
+    def delete_owned_by(self, owner: str) -> int:
+        with self._lock:
+            return self._conn.execute("DELETE FROM games WHERE owner_id = ?", (owner,)).rowcount
 
     def _purge(self, now: float) -> None:
         self._conn.execute("DELETE FROM games WHERE touched_at < ?", (now - self._ttl,))

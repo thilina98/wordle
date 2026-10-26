@@ -106,6 +106,14 @@ class PostgresPlayerRepository:
             # PoolTimeout is an OperationalError, so a full pool lands here too.
             raise AccountsUnavailable("Player store unavailable") from exc
 
+    def delete(self, player_id: str) -> None:
+        # Identities go with the player: ON DELETE CASCADE.
+        try:
+            with self._pool.connection() as conn:
+                conn.execute("DELETE FROM players WHERE player_id = %s", (player_id,))
+        except psycopg.Error as exc:
+            raise AccountsUnavailable("Player store unavailable") from exc
+
     # --- Internals ----------------------------------------------------------
 
     @staticmethod

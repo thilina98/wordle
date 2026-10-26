@@ -103,6 +103,25 @@ def read_my_player(player: SignedInPlayer) -> PlayerView:
     return PlayerView.of(player)
 
 
+@router.delete("/players/me", status_code=status.HTTP_204_NO_CONTENT)
+def delete_my_player(request: Request, player: SignedInPlayer) -> None:
+    """Delete the signed-in player: their account here and their games.
+
+    The account at the identity provider is not touched. A client should sign
+    the player out straight after: the same token, used again, signs in as a
+    brand-new player.
+    """
+    try:
+        request.app.state.accounts.delete(player)
+    except AccountsUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Could not delete the account. Try again shortly."
+        ) from exc
+    # After the player, so a database outage leaves everything as it was.
+    # Games left over by a failure here are unreachable and expire anyway.
+    _store(request).delete_owned_by(player.player_id)
+
+
 # --- Game -----------------------------------------------------------------
 
 

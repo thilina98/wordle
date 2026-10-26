@@ -99,6 +99,19 @@ class TestGameStoreContract:
         assert store.get(game_id) is None
         assert store.get(game_id, viewer="player-1") is not None
 
+    def test_delete_owned_by_removes_only_that_players_games(self, make_store):
+        store = make_store()
+        mine = [store.create(a_game(), owner="player-1") for _ in range(2)]
+        theirs = store.create(a_game(), owner="player-2")
+        anonymous = store.create(a_game())
+        assert store.delete_owned_by("player-1") == 2
+        assert all(store.get(g, viewer="player-1") is None for g in mine)
+        assert store.get(theirs, viewer="player-2") is not None
+        assert store.get(anonymous) is not None
+
+    def test_delete_owned_by_with_no_games_is_harmless(self, make_store):
+        assert make_store().delete_owned_by("nobody") == 0
+
     def test_saved_guesses_are_read_back(self, make_store):
         store = make_store()
         game = a_game()

@@ -122,6 +122,62 @@ class TestSignIn:
             app.state.store.close()
 
 
+class TestDeletePlayer:
+    def test_deleting_needs_a_token(self, client):
+        assert client.delete("/api/players/me").status_code == 401
+
+    def test_deletes_the_player_and_their_games(self, sign_in, players, app):
+        player = sign_in("google|1")
+        me = player.get("/api/players/me").json()["player_id"]
+        game_id = new_game(player)["game_id"]
+
+        assert player.delete("/api/players/me").status_code == 204
+        assert len(players) == 0
+        assert app.state.store.get(game_id, viewer=me) is None
+
+    def test_other_players_and_anonymous_games_are_untouched(self, sign_in, client, players):
+        keep = sign_in("github|2")
+        their_game = new_game(keep)["game_id"]
+        anonymous_game = new_game(client)["game_id"]
+
+        sign_in("google|1").delete("/api/players/me")
+        assert len(players) == 1
+        assert keep.get(f"/api/games/{their_game}").status_code == 200
+        assert client.get(f"/api/games/{anonymous_game}").status_code == 200
+
+    def test_the_same_sign_in_afterwards_is_a_new_empty_player(self, sign_in):
+        player = sign_in("google|1")
+        before = player.get("/api/players/me").json()["player_id"]
+        game_id = new_game(player)["game_id"]
+        player.delete("/api/players/me")
+
+        after = player.get("/api/players/me").json()["player_id"]
+        assert after != before
+        assert player.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_a_database_outage_deletes_nothing(self, sign_in, players, app, monkeypatch):
+        from wordle.accounts import AccountsUnavailable
+
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        game_id = new_game(player)["game_id"]
+
+        def down(player_id):
+            raise AccountsUnavailable("down")
+
+        monkeypatch.setattr(players, "delete", down)
+        assert player.delete("/api/players/me").status_code == 503
+        assert player.get(f"/api/games/{game_id}").status_code == 200
+
+    def test_browsers_may_send_delete(self, client):
+        response = client.options(
+            "/api/players/me",
+            headers={"Origin": ORIGIN, "Access-Control-Request-Method": "DELETE"},
+        )
+        assert response.status_code == 200
+        assert "DELETE" in response.headers["access-control-allow-methods"]
+
+
 class TestGameOwnership:
     def test_a_signed_in_players_game_is_theirs(self, sign_in, answer):
         answer("crane")

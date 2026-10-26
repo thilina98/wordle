@@ -35,6 +35,13 @@ class PlayerRepository(Protocol):
         """
         ...
 
+    def delete(self, player_id: str) -> None:
+        """Remove a player and every identity that signs them in.
+
+        Does nothing if the player is already gone.
+        """
+        ...
+
 
 class InMemoryPlayerRepository:
     """Process-local players. For tests, and for running without a database."""
@@ -66,6 +73,14 @@ class InMemoryPlayerRepository:
             if profile.verified_email:
                 self._verified_emails[identity] = profile.verified_email.lower()
             return self._players[player_id]
+
+    def delete(self, player_id: str) -> None:
+        with self._lock:
+            self._players.pop(player_id, None)
+            gone = [i for i, owner in self._identities.items() if owner == player_id]
+            for identity in gone:
+                del self._identities[identity]
+                self._verified_emails.pop(identity, None)
 
     def _player_with_email(self, email: str) -> str | None:
         """Caller holds the lock. Oldest matching identity wins, as in Postgres."""
