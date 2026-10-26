@@ -170,7 +170,7 @@ JSON everywhere. No route needs a token. Send `Authorization: Bearer <token>`
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/healthz` | Liveness. |
-| `GET` | `/api/me` | The signed-in player. The first call registers them. Token required. |
+| `GET` | `/api/players/me` | The signed-in player. The first call registers them. Token required. |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
 | `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |
@@ -217,9 +217,38 @@ A game started while signed in belongs to that player; anyone else gets a 404.
 A game started anonymously is open to whoever holds its unguessable id, as
 every game was before accounts.
 
-No provider and no database is named outside `backend/wordle/accounts/`, and
-both are swapped by configuration. See [backend/ACCOUNTS.md](backend/ACCOUNTS.md)
-for the design, provider setup and the database schema.
+No provider and no database is named outside `backend/wordle/accounts/`.
+Switching to another OpenID Connect provider (Authentik, Keycloak...) is a
+configuration change; replacing PostgreSQL needs a new storage class. See
+[backend/ACCOUNTS.md](backend/ACCOUNTS.md) for the design, provider setup and
+the database schema.
+
+### Sign-in on or off
+
+Two settings in `backend/.env` decide whether players can sign in:
+
+| `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE` | Result |
+|---|---|
+| Both set | **Sign-in on.** Players can sign in through the provider, and their games belong to their account. Anonymous play still works. Needs PostgreSQL. |
+| Neither set | **Sign-in off.** Anonymous play only, exactly as before accounts existed. The API never contacts the provider or PostgreSQL, and answers any token with "Sign-in is not enabled on this server". Useful before the provider is set up. |
+| Only one set, or set to an empty value | The API refuses to start. |
+
+To check which mode a running server is in, send it a fake token shaped like a
+real one:
+
+```bash
+curl -i -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InByb2JlIn0.e30.x" \
+  localhost:8000/api/players/me
+```
+
+| Reply | Meaning |
+|---|---|
+| `401` "Unknown signing key" | Sign-in is on and working: the API reached the provider, fetched its keys and rejected the fake token. |
+| `503` "Sign-in is unavailable" | Sign-in is on but the provider cannot be reached, or `WORDLE_AUTH_ISSUER` does not match it exactly (check the trailing `/`). |
+| `401` "Sign-in is not enabled on this server" | Sign-in is off. |
+
+A request with no token at all gets "Sign in to do this" in both modes, so it
+cannot tell them apart.
 
 ## Word lists
 

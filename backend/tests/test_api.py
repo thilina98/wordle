@@ -64,28 +64,28 @@ class TestAnonymousPlay:
 
 class TestSignIn:
     def test_me_needs_a_token(self, client):
-        response = client.get("/api/me")
+        response = client.get("/api/players/me")
         assert response.status_code == 401
         assert response.headers["WWW-Authenticate"] == "Bearer"
 
     def test_first_sign_in_creates_the_player(self, sign_in, players):
         response = sign_in("google|1", email="ada@example.com", verified=True, name="Ada").get(
-            "/api/me"
+            "/api/players/me"
         )
         assert response.status_code == 200
         assert response.json()["display_name"] == "Ada"
         assert len(players) == 1
 
     def test_signing_in_again_is_the_same_player(self, sign_in, players):
-        first = sign_in("google|1").get("/api/me").json()
-        again = sign_in("google|1").get("/api/me").json()
+        first = sign_in("google|1").get("/api/players/me").json()
+        again = sign_in("google|1").get("/api/players/me").json()
         assert first == again
         assert len(players) == 1
 
     def test_a_known_player_costs_no_call_to_the_provider(self, sign_in, provider):
         player = sign_in("google|1")
-        player.get("/api/me")
-        player.get("/api/me")
+        player.get("/api/players/me")
+        player.get("/api/players/me")
         player.post("/api/games")
         assert provider.profile_calls == 1
 
@@ -103,7 +103,7 @@ class TestSignIn:
     def test_a_provider_outage_is_a_503_not_a_401(self, sign_in, provider):
         player = sign_in("google|1")
         provider.down = True
-        assert player.get("/api/me").status_code == 503
+        assert player.get("/api/players/me").status_code == 503
 
     def test_a_provider_outage_does_not_stop_anonymous_play(self, client, provider):
         provider.down = True
@@ -115,7 +115,7 @@ class TestSignIn:
             client = TestClient(app)
             assert client.post("/api/games").status_code == 201
             client.headers["Authorization"] = "Bearer anything"
-            response = client.get("/api/me")
+            response = client.get("/api/players/me")
             assert response.status_code == 401
             assert "not enabled" in response.json()["detail"]
         finally:

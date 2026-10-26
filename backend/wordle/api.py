@@ -92,8 +92,8 @@ def _load_game(request: Request, game_id: str, player: Player | None) -> GameSta
 # --- Accounts -------------------------------------------------------------
 
 
-@router.get("/me", response_model=PlayerView)
-def read_me(player: SignedInPlayer) -> PlayerView:
+@router.get("/players/me", response_model=PlayerView)
+def read_my_player(player: SignedInPlayer) -> PlayerView:
     """Who the token belongs to.
 
     There is no separate sign-up: the first call with a new identity creates

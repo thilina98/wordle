@@ -547,7 +547,7 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/
 
 # Sign-in is wired up: 401 without a token (503 means the issuer is wrong)
-curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/api/me
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/api/players/me
 ```
 
 Then check the frontend picked up the right API base:
