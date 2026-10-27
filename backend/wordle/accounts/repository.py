@@ -35,11 +35,21 @@ class PlayerRepository(Protocol):
         """
         ...
 
-    def delete(self, player_id: str) -> None:
+    def identities(self, player_id: str) -> list[Identity]:
+        """Every sign-in identity of this player. Empty for an unknown player."""
+        ...
+
+    def delete(self, player_id: str, deleted_at: float) -> None:
         """Remove a player and every identity that signs them in.
 
-        Does nothing if the player is already gone.
+        Each identity is remembered as deleted at `deleted_at` (seconds since
+        the epoch), by its fingerprint only. Does nothing if the player is
+        already gone.
         """
+        ...
+
+    def deleted_at(self, identity: Identity) -> float | None:
+        """When a player signed in by this identity was last deleted, if ever."""
         ...
 
 
@@ -52,6 +62,8 @@ class InMemoryPlayerRepository:
         self._identities: dict[Identity, str] = {}
         #: identity -> its verified email, lowercased, for linking.
         self._verified_emails: dict[Identity, str] = {}
+        #: identity fingerprint -> when its player was deleted.
+        self._deleted: dict[str, float] = {}
 
     def find(self, identity: Identity) -> Player | None:
         with self._lock:
@@ -74,13 +86,23 @@ class InMemoryPlayerRepository:
                 self._verified_emails[identity] = profile.verified_email.lower()
             return self._players[player_id]
 
-    def delete(self, player_id: str) -> None:
+    def identities(self, player_id: str) -> list[Identity]:
+        with self._lock:
+            return [i for i, owner in self._identities.items() if owner == player_id]
+
+    def delete(self, player_id: str, deleted_at: float) -> None:
         with self._lock:
             self._players.pop(player_id, None)
             gone = [i for i, owner in self._identities.items() if owner == player_id]
             for identity in gone:
                 del self._identities[identity]
                 self._verified_emails.pop(identity, None)
+                key = identity.fingerprint()
+                self._deleted[key] = max(deleted_at, self._deleted.get(key, deleted_at))
+
+    def deleted_at(self, identity: Identity) -> float | None:
+        with self._lock:
+            return self._deleted.get(identity.fingerprint())
 
     def _player_with_email(self, email: str) -> str | None:
         """Caller holds the lock. Oldest matching identity wins, as in Postgres."""

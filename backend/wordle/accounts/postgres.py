@@ -6,6 +6,7 @@ means another adapter beside this one; nothing outside `accounts` changes.
 
 from __future__ import annotations
 
+import uuid
 from importlib import resources
 
 import psycopg
@@ -20,6 +21,15 @@ _MIGRATION_LOCK = 0x776F72646C65  # "wordle"
 
 _CONNECT_TIMEOUT = 5
 _POOL_TIMEOUT = 5.0
+
+
+def _is_uuid(value: str) -> bool:
+    """Player ids are UUIDs here; anything else would be a query error, not a miss."""
+    try:
+        uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
 
 
 class _AlreadyRegistered(Exception):
@@ -106,15 +116,56 @@ class PostgresPlayerRepository:
             # PoolTimeout is an OperationalError, so a full pool lands here too.
             raise AccountsUnavailable("Player store unavailable") from exc
 
-    def delete(self, player_id: str) -> None:
-        # Identities go with the player: ON DELETE CASCADE.
+    def identities(self, player_id: str) -> list[Identity]:
+        if not _is_uuid(player_id):
+            return []  # not an id this store could ever have issued
         try:
             with self._pool.connection() as conn:
+                return self._identities(conn, player_id)
+        except psycopg.Error as exc:
+            raise AccountsUnavailable("Player store unavailable") from exc
+
+    def delete(self, player_id: str, deleted_at: float) -> None:
+        if not _is_uuid(player_id):
+            return
+        try:
+            with self._pool.connection() as conn, conn.transaction():
+                for identity in self._identities(conn, player_id):
+                    conn.execute(
+                        "INSERT INTO deleted_identities (identity_fingerprint, deleted_at)"
+                        " VALUES (%s, to_timestamp(%s))"
+                        " ON CONFLICT (identity_fingerprint) DO UPDATE"
+                        " SET deleted_at = GREATEST(deleted_identities.deleted_at,"
+                        " EXCLUDED.deleted_at)",
+                        (identity.fingerprint(), deleted_at),
+                    )
+                # Identities go with the player: ON DELETE CASCADE.
                 conn.execute("DELETE FROM players WHERE player_id = %s", (player_id,))
         except psycopg.Error as exc:
             raise AccountsUnavailable("Player store unavailable") from exc
 
+    def deleted_at(self, identity: Identity) -> float | None:
+        try:
+            with self._pool.connection() as conn:
+                row = conn.execute(
+                    "SELECT extract(epoch FROM deleted_at) FROM deleted_identities"
+                    " WHERE identity_fingerprint = %s",
+                    (identity.fingerprint(),),
+                ).fetchone()
+        except psycopg.Error as exc:
+            raise AccountsUnavailable("Player store unavailable") from exc
+        return float(row[0]) if row else None
+
     # --- Internals ----------------------------------------------------------
+
+    @staticmethod
+    def _identities(conn: psycopg.Connection, player_id: str) -> list[Identity]:
+        rows = conn.execute(
+            "SELECT issuer, subject FROM player_identities"
+            " WHERE player_id = %s ORDER BY identity_id",
+            (player_id,),
+        ).fetchall()
+        return [Identity(issuer, subject) for issuer, subject in rows]
 
     @staticmethod
     def _find(conn: psycopg.Connection, identity: Identity) -> Player | None:

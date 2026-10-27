@@ -38,7 +38,9 @@ def repository(request):
     from wordle.accounts.postgres import PostgresPlayerRepository
 
     with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
-        conn.execute("DROP TABLE IF EXISTS player_identities, players, schema_migrations")
+        conn.execute(
+            "DROP TABLE IF EXISTS deleted_identities, player_identities, players, schema_migrations"
+        )
     repo = PostgresPlayerRepository(TEST_DATABASE_URL)
     yield repo
     repo.close()
@@ -141,6 +143,48 @@ class TestIdentify:
             accounts.identify(bearer(token))
 
 
+class TestDelete:
+    def test_closes_every_provider_account_then_forgets_the_player(
+        self, accounts, provider, repository
+    ):
+        email = dict(email="ada@example.com", verified=True)
+        player = accounts.identify(bearer(provider.person("auth0|1", **email)))
+        accounts.identify(bearer(provider.person("github|9", **email)))
+
+        accounts.delete(player)
+        assert {i.subject for i in provider.deleted} == {"auth0|1", "github|9"}
+        assert repository.identities(player.player_id) == []
+
+    def test_a_provider_failure_deletes_nothing(self, accounts, provider, repository):
+        token = provider.person("auth0|1")
+        player = accounts.identify(bearer(token))
+        provider.delete_fails = True
+        with pytest.raises(AccountsUnavailable):
+            accounts.delete(player)
+        assert accounts.identify(bearer(token)) == player
+
+    def test_a_provider_that_cannot_close_accounts_still_deletes_ours(
+        self, accounts, provider, repository
+    ):
+        provider.can_delete = False
+        player = accounts.identify(bearer(provider.person("auth0|1")))
+        accounts.delete(player)
+        assert provider.deleted == []
+        assert repository.identities(player.player_id) == []
+
+    def test_a_token_from_before_the_deletion_is_refused(self, accounts, provider):
+        token = provider.person("auth0|1")
+        accounts.delete(accounts.identify(bearer(token)))
+        with pytest.raises(AuthenticationError, match="deleted"):
+            accounts.identify(bearer(token))
+
+    def test_signing_in_again_afterwards_is_a_new_player(self, accounts, provider):
+        before = accounts.identify(bearer(provider.person("auth0|1")))
+        accounts.delete(before)
+        after = accounts.identify(bearer(provider.person("auth0|1")))
+        assert after.player_id != before.player_id
+
+
 class TestRepositoryContract:
     """Behaviour every PlayerRepository adapter must share."""
 
@@ -164,33 +208,63 @@ class TestRepositoryContract:
     def test_delete_forgets_the_player_and_their_identities(self, repository):
         repository.register(self.ME, Profile(name="Ada"), None)
         player = repository.find(self.ME)
-        repository.delete(player.player_id)
+        repository.delete(player.player_id, deleted_at=1000.0)
         assert repository.find(self.ME) is None
+
+    def test_deleting_an_unknown_player_is_harmless(self, repository):
+        repository.delete("no-such-player", deleted_at=1000.0)
 
     def test_delete_is_idempotent(self, repository):
         player = repository.register(self.ME, Profile(), None)
-        repository.delete(player.player_id)
-        repository.delete(player.player_id)
+        repository.delete(player.player_id, deleted_at=1000.0)
+        repository.delete(player.player_id, deleted_at=1000.0)
 
     def test_delete_leaves_other_players_alone(self, repository):
         other = Identity(ISSUER, "auth0|2")
         repository.register(self.ME, Profile(), None)
         kept = repository.register(other, Profile(), None)
-        repository.delete(repository.find(self.ME).player_id)
+        repository.delete(repository.find(self.ME).player_id, deleted_at=1000.0)
         assert repository.find(other) == kept
 
     def test_signing_in_after_delete_is_a_new_player(self, repository):
         before = repository.register(self.ME, Profile(), None)
-        repository.delete(before.player_id)
+        repository.delete(before.player_id, deleted_at=1000.0)
         after = repository.register(self.ME, Profile(), None)
         assert after.player_id != before.player_id
 
     def test_a_deleted_players_email_no_longer_links(self, repository):
         email = Profile(email="ada@example.com", email_verified=True)
         old = repository.register(self.ME, email, None)
-        repository.delete(old.player_id)
+        repository.delete(old.player_id, deleted_at=1000.0)
         other = Identity(ISSUER, "github|9")
         assert repository.register(other, email, "ada@example.com").player_id != old.player_id
+
+    def test_identities_lists_every_sign_in_of_a_player(self, repository):
+        github = Identity(ISSUER, "github|9")
+        email = Profile(email="ada@example.com", email_verified=True)
+        player = repository.register(self.ME, email, None)
+        repository.register(github, email, "ada@example.com")
+        assert repository.identities(player.player_id) == [self.ME, github]
+        assert repository.identities("no-such-player") == []
+
+    def test_delete_remembers_when_each_identity_was_deleted(self, repository):
+        github = Identity(ISSUER, "github|9")
+        email = Profile(email="ada@example.com", email_verified=True)
+        player = repository.register(self.ME, email, None)
+        repository.register(github, email, "ada@example.com")
+        assert repository.deleted_at(self.ME) is None
+
+        repository.delete(player.player_id, deleted_at=1000.0)
+        assert repository.deleted_at(self.ME) == pytest.approx(1000.0)
+        assert repository.deleted_at(github) == pytest.approx(1000.0)
+        assert repository.deleted_at(Identity(ISSUER, "someone-else")) is None
+
+    def test_a_later_deletion_moves_the_time_forward(self, repository):
+        first = repository.register(self.ME, Profile(), None)
+        repository.delete(first.player_id, deleted_at=1000.0)
+        second = repository.register(self.ME, Profile(), None)
+        repository.delete(second.player_id, deleted_at=2000.0)
+        assert repository.deleted_at(self.ME) == pytest.approx(2000.0)
 
     def test_racing_registrations_of_one_identity_make_one_player(self, repository):
         results, barrier = [], threading.Barrier(8)

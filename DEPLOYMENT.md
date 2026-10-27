@@ -245,6 +245,7 @@ both show a container's environment; neither shows a mounted secret.
 ```bash
 mkdir -p secrets
 python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+touch secrets/wordle_auth0_client_secret   # Auth0 deletion secret; may stay empty, see backend/ACCOUNTS.md
 chmod 600 secrets/wordle_*
 ```
 

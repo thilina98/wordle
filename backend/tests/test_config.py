@@ -63,6 +63,53 @@ class TestSignInConfiguration:
                 _secrets_dir=no_secrets,
             )
 
+    def test_auth0_needs_its_client_id_and_secret(self, no_secrets):
+        base = dict(
+            auth_issuer=self.ISSUER,
+            auth_audience="api",
+            database_url="postgresql://wordle@db/wordle",
+            auth_provider="auth0",
+            _env_file=None,
+            _secrets_dir=no_secrets,
+        )
+        with pytest.raises(ValidationError, match="AUTH0_CLIENT_ID"):
+            Settings(**base)
+        with pytest.raises(ValidationError, match="wordle_auth0_client_secret"):
+            Settings(**base, auth0_client_id="abc")
+        assert Settings(**base, auth0_client_id="abc", auth0_client_secret="s3cret")
+
+    def test_the_auth0_secret_comes_from_its_secret_file(self, tmp_path):
+        secrets = tmp_path / "secrets"
+        secrets.mkdir()
+        (secrets / "wordle_auth0_client_secret").write_text("s3cret", encoding="utf-8")
+        assert Settings(_env_file=None, _secrets_dir=str(secrets)).auth0_client_secret == "s3cret"
+
+    def test_the_app_builds_the_provider_that_is_named(self, settings, monkeypatch):
+        from wordle.accounts import InMemoryPlayerRepository, postgres
+        from wordle.accounts.auth0 import Auth0Provider
+        from wordle.accounts.oidc import OidcProvider
+
+        monkeypatch.setattr(
+            postgres, "PostgresPlayerRepository", lambda *a, **k: InMemoryPlayerRepository()
+        )
+        common = {
+            "auth_issuer": self.ISSUER,
+            "auth_audience": "api",
+            "database_url": "postgresql://wordle@db/wordle",
+        }
+        for update, expected in (
+            ({"auth_provider": "oidc"}, OidcProvider),
+            (
+                {"auth_provider": "auth0", "auth0_client_id": "a", "auth0_client_secret": "b"},
+                Auth0Provider,
+            ),
+        ):
+            app = create_app(settings.model_copy(update={**common, **update}))
+            try:
+                assert isinstance(app.state.accounts._provider, expected)
+            finally:
+                app.state.store.close()
+
     def test_algorithms_arrive_comma_separated(self, monkeypatch):
         monkeypatch.setenv("WORDLE_AUTH_ALGORITHMS", "RS256, ES256")
         assert Settings(_env_file=None).auth_algorithms == ["RS256", "ES256"]

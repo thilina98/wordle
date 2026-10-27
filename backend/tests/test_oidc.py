@@ -96,7 +96,9 @@ def provider(idp, clock):
 
 class TestVerify:
     def test_a_good_token_names_its_owner(self, provider, idp):
-        assert provider.verify(idp.token()) == Identity(ISSUER, "auth0|1")
+        credential = provider.verify(idp.token())
+        assert credential.identity == Identity(ISSUER, "auth0|1")
+        assert abs(credential.issued_at - time.time()) < 5
 
     def test_keys_are_fetched_once_then_cached(self, provider, idp):
         provider.verify(idp.token())
@@ -153,7 +155,7 @@ class TestVerify:
         new = rsa_key()
         idp.keys.append(public_jwk(new, "key-2"))
         clock.now += KEY_REFRESH_INTERVAL + 1
-        assert provider.verify(idp.token(key=new, kid="key-2")).subject == "auth0|1"
+        assert provider.verify(idp.token(key=new, kid="key-2")).identity.subject == "auth0|1"
 
     def test_unknown_keys_cannot_hammer_the_provider(self, provider, idp):
         provider.verify(idp.token())
@@ -177,11 +179,18 @@ class TestVerify:
         jwk = json.loads(ECAlgorithm.to_jwk(key.public_key()))
         idp.keys = [{**jwk, "kid": "ec-1", "use": "sig", "alg": "ES256"}]
         provider = OidcProvider(ISSUER, AUDIENCE, algorithms=["ES256"], fetch=idp.fetch)
-        assert provider.verify(idp.token(key=key, kid="ec-1", alg="ES256")).subject == "auth0|1"
+        credential = provider.verify(idp.token(key=key, kid="ec-1", alg="ES256"))
+        assert credential.identity.subject == "auth0|1"
 
     def test_symmetric_algorithms_cannot_be_configured(self):
         with pytest.raises(ValueError):
             OidcProvider(ISSUER, AUDIENCE, algorithms=["HS256"])
+
+
+class TestDeleteAccount:
+    def test_cannot_close_accounts(self, provider):
+        # The standard has no such operation; Auth0Provider adds it.
+        assert provider.delete_account(Identity(ISSUER, "auth0|1")) is False
 
 
 class TestProfile:

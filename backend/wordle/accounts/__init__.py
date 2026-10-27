@@ -14,7 +14,7 @@ Accounts are optional. A request with no credentials is an anonymous player and
 plays exactly as before.
 """
 
-from .model import Identity, Player, Profile
+from .model import Credential, Identity, Player, Profile
 from .repository import InMemoryPlayerRepository, PlayerRepository
 from .service import (
     Accounts,
@@ -28,6 +28,7 @@ __all__ = [
     "Accounts",
     "AccountsUnavailable",
     "AuthenticationError",
+    "Credential",
     "Identity",
     "IdentityProvider",
     "InMemoryPlayerRepository",

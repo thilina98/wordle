@@ -8,6 +8,9 @@ discovery document at `<issuer>/.well-known/openid-configuration`.
 Swapping provider means changing those two values. Sign-in methods (email and
 password, Google, GitHub) are configured at the provider, not here: whichever
 way someone signed in, this API receives the same kind of token.
+
+OpenID Connect has no way to close an account, so this class cannot. A
+provider-specific class (see auth0.py) wraps this one and adds that.
 """
 
 from __future__ import annotations
@@ -23,7 +26,7 @@ from typing import Any
 import jwt
 from jwt import PyJWK, PyJWKSet
 
-from .model import Identity, Profile
+from .model import Credential, Identity, Profile
 from .service import AccountsUnavailable, AuthenticationError
 
 #: Seconds of clock difference forgiven between us and the provider.
@@ -98,7 +101,11 @@ class OidcProvider:
 
     # --- IdentityProvider ---------------------------------------------------
 
-    def verify(self, token: str) -> Identity:
+    @property
+    def issuer(self) -> str:
+        return self._issuer
+
+    def verify(self, token: str) -> Credential:
         try:
             header = jwt.get_unverified_header(token)
         except jwt.PyJWTError as exc:
@@ -125,7 +132,11 @@ class OidcProvider:
         subject = claims["sub"]
         if not isinstance(subject, str) or not subject:
             raise AuthenticationError("Invalid token")
-        return Identity(issuer=self._issuer, subject=subject)
+        try:
+            issued_at = float(claims["iat"])
+        except (TypeError, ValueError) as exc:
+            raise AuthenticationError("Invalid token") from exc
+        return Credential(Identity(issuer=self._issuer, subject=subject), issued_at)
 
     def profile(self, token: str) -> Profile:
         endpoint = self._discovered("userinfo_endpoint")
@@ -144,6 +155,10 @@ class OidcProvider:
             email_verified=verified is True or verified == "true",
             name=name if isinstance(name, str) else None,
         )
+
+    def delete_account(self, identity: Identity) -> bool:
+        """Always False: the standard gives no way to close an account."""
+        return False
 
     # --- Discovery and keys -------------------------------------------------
 

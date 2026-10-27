@@ -145,15 +145,36 @@ class TestDeletePlayer:
         assert keep.get(f"/api/games/{their_game}").status_code == 200
         assert client.get(f"/api/games/{anonymous_game}").status_code == 200
 
-    def test_the_same_sign_in_afterwards_is_a_new_empty_player(self, sign_in):
+    def test_the_old_token_is_refused_afterwards(self, sign_in):
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        player.delete("/api/players/me")
+
+        response = player.get("/api/players/me")
+        assert response.status_code == 401
+        assert "deleted" in response.json()["detail"]
+
+    def test_signing_in_again_is_a_new_empty_player(self, sign_in):
         player = sign_in("google|1")
         before = player.get("/api/players/me").json()["player_id"]
         game_id = new_game(player)["game_id"]
         player.delete("/api/players/me")
 
-        after = player.get("/api/players/me").json()["player_id"]
-        assert after != before
-        assert player.get(f"/api/games/{game_id}").status_code == 404
+        again = sign_in("google|1")
+        assert again.get("/api/players/me").json()["player_id"] != before
+        assert again.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_the_provider_account_is_closed(self, sign_in, provider):
+        sign_in("google|1").delete("/api/players/me")
+        assert [i.subject for i in provider.deleted] == ["google|1"]
+
+    def test_a_provider_outage_deletes_nothing(self, sign_in, provider):
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        game_id = new_game(player)["game_id"]
+        provider.delete_fails = True
+        assert player.delete("/api/players/me").status_code == 503
+        assert player.get(f"/api/games/{game_id}").status_code == 200
 
     def test_a_database_outage_deletes_nothing(self, sign_in, players, app, monkeypatch):
         from wordle.accounts import AccountsUnavailable
@@ -162,7 +183,7 @@ class TestDeletePlayer:
         player.get("/api/players/me")
         game_id = new_game(player)["game_id"]
 
-        def down(player_id):
+        def down(*args, **kwargs):
             raise AccountsUnavailable("down")
 
         monkeypatch.setattr(players, "delete", down)

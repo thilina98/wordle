@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .accounts import Accounts, SignInDisabled
+from .accounts import Accounts, IdentityProvider, SignInDisabled
 from .api import router as api_router
 from .config import Settings, get_settings
 from .game import MIN_ATTEMPTS, default_attempts
@@ -73,20 +73,34 @@ def _game_store(settings: Settings, catalogue: WordCatalogue) -> GameStore:
     )
 
 
+def _identity_provider(settings: Settings) -> IdentityProvider:
+    """The sign-in service named by WORDLE_AUTH_PROVIDER."""
+    from .accounts.oidc import OidcProvider
+
+    if settings.auth_provider == "auth0":
+        from .accounts.auth0 import Auth0Provider
+
+        return Auth0Provider(
+            settings.auth_issuer,
+            settings.auth_audience,
+            settings.auth0_client_id,
+            settings.auth0_client_secret,
+            algorithms=settings.auth_algorithms,
+        )
+    return OidcProvider(
+        settings.auth_issuer, settings.auth_audience, algorithms=settings.auth_algorithms
+    )
+
+
 def _accounts(settings: Settings) -> Accounts | SignInDisabled:
     """Sign-in as configured, or anonymous play only."""
     if not settings.sign_in_enabled:
         return SignInDisabled()
     # Imported here, so anonymous-only play never loads the database driver.
-    from .accounts.oidc import OidcProvider
     from .accounts.postgres import PostgresPlayerRepository
 
     return Accounts(
-        OidcProvider(
-            settings.auth_issuer,
-            settings.auth_audience,
-            algorithms=settings.auth_algorithms,
-        ),
+        _identity_provider(settings),
         PostgresPlayerRepository(settings.database_url, password=settings.database_password),
         link_verified_emails=settings.auth_link_verified_emails,
     )

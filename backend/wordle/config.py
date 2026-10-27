@@ -54,7 +54,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # --- Sign-in. Any standard OpenID Connect provider; none is named in code.
+    # --- Sign-in. Any standard OpenID Connect provider.
+    auth_provider: Literal["oidc", "auth0"] = Field(
+        default="oidc",
+        description=(
+            "oidc works with any OpenID Connect provider but cannot close "
+            "accounts there. auth0 also closes the Auth0 account when a player "
+            "deletes theirs."
+        ),
+    )
     auth_issuer: str | None = Field(
         default=None,
         description=(
@@ -76,6 +84,13 @@ class Settings(BaseSettings):
             "Join a new sign-in method to an existing player when the provider "
             "has verified they share an email."
         ),
+    )
+
+    # --- Auth0 only: the Machine to Machine application that closes accounts.
+    auth0_client_id: str | None = Field(default=None)
+    auth0_client_secret: str | None = Field(
+        default=None,
+        description="A secret file (wordle_auth0_client_secret), never an environment variable.",
     )
 
     # --- PostgreSQL: players, and everything else except games in progress.
@@ -157,6 +172,16 @@ class Settings(BaseSettings):
             raise ValueError("WORDLE_AUTH_AUDIENCE is required when WORDLE_AUTH_ISSUER is set")
         if not self.database_url:
             raise ValueError("WORDLE_DATABASE_URL is required when WORDLE_AUTH_ISSUER is set")
+        if self.auth_provider == "auth0":
+            if not self.auth0_client_id:
+                raise ValueError(
+                    "WORDLE_AUTH0_CLIENT_ID is required when WORDLE_AUTH_PROVIDER is auth0"
+                )
+            if not self.auth0_client_secret:
+                raise ValueError(
+                    "secrets/wordle_auth0_client_secret is required when "
+                    "WORDLE_AUTH_PROVIDER is auth0"
+                )
         return self
 
 

@@ -27,7 +27,7 @@ Behind that interface are two seams, each with two adapters:
 
 | Seam | Production adapter | Test adapter |
 |---|---|---|
-| `IdentityProvider`: proves who sent a token | `OidcProvider` (standard OpenID Connect) | `tests/fakes.py` |
+| `IdentityProvider`: proves who sent a token, closes accounts | `OidcProvider` (any OpenID Connect provider), `Auth0Provider` | `tests/fakes.py` |
 | `PlayerRepository`: remembers players | `PostgresPlayerRepository` | `InMemoryPlayerRepository` |
 
 The repository contract tests (`tests/test_accounts.py`) run against both
@@ -79,17 +79,39 @@ anonymously.
 
 ### Deleting a player
 
-`DELETE /api/players/me` removes the player, every sign-in identity that
-points at them, and every game they own. It answers 204, or 503 with nothing
-deleted if the database is down.
+`DELETE /api/players/me`, in this order:
 
-It does not delete the account at the identity provider: that would tie this
-code to one provider's admin API. So the frontend must sign the player out
-right after; the same token used again signs in as a new, empty player.
+1. **Closes the player's accounts at the provider**, one per sign-in method
+   (email, Google and GitHub are separate Auth0 accounts). If the provider
+   fails, nothing is deleted and the answer is 503, so the player can retry.
+   An account already gone counts as closed, so a retry never gets stuck.
+2. **Removes the player** and their sign-in identities from PostgreSQL.
+3. **Removes their games** from the active games file.
+
+It answers 204. Afterwards, any token issued before the deletion is refused
+(401, "This account was deleted"), so a second open tab cannot bring the
+player back. Signing up again later works and makes a new player.
+
+Closing provider accounts is not part of OpenID Connect, so it depends on
+`WORDLE_AUTH_PROVIDER`:
+
+| Setting | Signs in with | Deleting a player |
+|---|---|---|
+| `oidc` | any OpenID Connect provider | removes our data; the provider account stays open (logged) |
+| `auth0` | Auth0 | removes our data and closes the Auth0 accounts |
+
+Switching to another provider stays a settings change with `oidc`. Writing a
+provider class for it (like `wordle/accounts/auth0.py`: the shared OpenID
+Connect sign-in plus that provider's delete call) adds account closing.
+
+To refuse old tokens, the `deleted_identities` table keeps, for each deleted
+sign-in, a SHA-256 fingerprint of it and the time of deletion. Not the
+provider's id, not the email: nothing there identifies a person.
 
 ## Database schema
 
-`wordle/accounts/migrations/0001_players.sql`. Migrations run automatically
+`wordle/accounts/migrations/0001_players.sql` and `0002_deleted_identities.sql`.
+Migrations run automatically
 at startup, under an advisory lock so two servers starting together do not
 race. Applied versions are recorded in `schema_migrations`.
 
@@ -142,6 +164,25 @@ created_at    TIMESTAMPTZ            issuer         TEXT  \  UNIQUE together
    `https://<your-tenant>.auth0.com/.well-known/openid-configuration`
    exactly, including Auth0's trailing slash. If it does not match, the API
    answers 503 and does not accept any token.
+6. **Let the API close accounts.** Applications → Applications → Create
+   Application. Name it `Wordle API account deletion`, choose **Machine to
+   Machine Applications**, and click Create. When asked which API it may call,
+   choose **Auth0 Management API**, and under permissions tick only
+   **`delete:users`**. Then, on its Settings tab:
+   - copy **Client ID** into `backend/.env`:
+
+     ```
+     WORDLE_AUTH_PROVIDER=auth0
+     WORDLE_AUTH0_CLIENT_ID=<the Client ID>
+     ```
+
+   - copy **Client Secret** into the file `secrets/wordle_auth0_client_secret`,
+     on its own, with nothing else in the file.
+
+   Grant only `delete:users`: this application's secret can then close
+   accounts and do nothing else. If you later give Auth0 a custom domain,
+   keep the issuer on the tenant domain for this, because Auth0 serves its
+   Management API only there.
 
 ## Running the PostgreSQL tests
 

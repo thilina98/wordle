@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 DISPLAY_NAME_MAX = 64
@@ -18,6 +19,23 @@ class Identity:
 
     issuer: str
     subject: str
+
+    def fingerprint(self) -> str:
+        """A one-way hash of this identity, for remembering it without keeping it.
+
+        Used to note that a deleted player's sign-in existed, without storing
+        the provider's id for that person.
+        """
+        return hashlib.sha256(f"{self.issuer}\0{self.subject}".encode()).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class Credential:
+    """A checked token: whose it is, and when the provider issued it."""
+
+    identity: Identity
+    #: Seconds since the epoch, from the token's own `iat`.
+    issued_at: float
 
 
 @dataclass(frozen=True, slots=True)
