@@ -6,13 +6,13 @@ prefix, no quotes.
 | File | What it is |
 |---|---|
 | `wordle_database_password` | Password for the PostgreSQL `wordle` user. The `db` container sets it on first start; the API reads it to connect. |
-| `wordle_auth0_client_secret` | Client Secret of the Auth0 Machine to Machine app that deletes users. Must exist for Docker to start; leave it empty unless `WORDLE_AUTH_PROVIDER=auth0`. |
+| `wordle_auth0_deletion_app_client_secret` | Client Secret of the Auth0 deletion app (Machine to Machine), from that app's Settings tab. Required when `WORDLE_AUTH_PROVIDER=auth0`. The file must exist for Docker to start either way. |
 
 Create it:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
-touch secrets/wordle_auth0_client_secret        # paste the Auth0 secret in, or leave empty
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret
 chmod 600 secrets/wordle_*
 ```
 

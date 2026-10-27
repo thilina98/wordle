@@ -72,17 +72,22 @@ class TestSignInConfiguration:
             _env_file=None,
             _secrets_dir=no_secrets,
         )
-        with pytest.raises(ValidationError, match="AUTH0_CLIENT_ID"):
+        with pytest.raises(ValidationError, match="AUTH0_DELETION_APP_CLIENT_ID"):
             Settings(**base)
-        with pytest.raises(ValidationError, match="wordle_auth0_client_secret"):
-            Settings(**base, auth0_client_id="abc")
-        assert Settings(**base, auth0_client_id="abc", auth0_client_secret="s3cret")
+        with pytest.raises(ValidationError, match="wordle_auth0_deletion_app_client_secret"):
+            Settings(**base, auth0_deletion_app_client_id="abc")
+        assert Settings(
+            **base, auth0_deletion_app_client_id="abc", auth0_deletion_app_client_secret="s3cret"
+        )
 
     def test_the_auth0_secret_comes_from_its_secret_file(self, tmp_path):
         secrets = tmp_path / "secrets"
         secrets.mkdir()
-        (secrets / "wordle_auth0_client_secret").write_text("s3cret", encoding="utf-8")
-        assert Settings(_env_file=None, _secrets_dir=str(secrets)).auth0_client_secret == "s3cret"
+        (secrets / "wordle_auth0_deletion_app_client_secret").write_text("s3cret", encoding="utf-8")
+        assert (
+            Settings(_env_file=None, _secrets_dir=str(secrets)).auth0_deletion_app_client_secret
+            == "s3cret"
+        )
 
     def test_the_app_builds_the_provider_that_is_named(self, settings, monkeypatch):
         from wordle.accounts import InMemoryPlayerRepository, postgres
@@ -100,7 +105,11 @@ class TestSignInConfiguration:
         for update, expected in (
             ({"auth_provider": "oidc"}, OidcProvider),
             (
-                {"auth_provider": "auth0", "auth0_client_id": "a", "auth0_client_secret": "b"},
+                {
+                    "auth_provider": "auth0",
+                    "auth0_deletion_app_client_id": "a",
+                    "auth0_deletion_app_client_secret": "b",
+                },
                 Auth0Provider,
             ),
         ):

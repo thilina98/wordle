@@ -46,7 +46,7 @@ services:
     # /proc/<pid>/environ both expose the environment, neither exposes these.
     secrets:
       - wordle_database_password
-      - wordle_auth0_client_secret
+      - wordle_auth0_deletion_app_client_secret
 
     # The backend's own settings: CORS origin, sign-in, game tuning.
     env_file: ./backend/.env
@@ -144,9 +144,10 @@ services:
 secrets:
   wordle_database_password:
     file: ./secrets/wordle_database_password
-  # Must exist; leave it empty unless WORDLE_AUTH_PROVIDER=auth0.
-  wordle_auth0_client_secret:
-    file: ./secrets/wordle_auth0_client_secret
+  # The Auth0 deletion app's Client Secret. Required when WORDLE_AUTH_PROVIDER=auth0;
+  # the file must exist for Docker to start either way.
+  wordle_auth0_deletion_app_client_secret:
+    file: ./secrets/wordle_auth0_deletion_app_client_secret
 
 volumes:
   wordle-data:

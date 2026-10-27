@@ -53,7 +53,7 @@ cp frontend/.env.example frontend/.env # frontend settings (Docker only)
 
 mkdir -p secrets                      # only needed for sign-in; see backend/ACCOUNTS.md
 python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
-touch secrets/wordle_auth0_client_secret   # Auth0 deletion secret; may stay empty, see backend/ACCOUNTS.md
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
 chmod 600 secrets/wordle_*
 ```
 
@@ -138,8 +138,8 @@ variable, or from `backend/.env`. See
 | `WORDLE_AUTH_ALGORITHMS` | `RS256` | Accepted token signatures. Asymmetric only. |
 | `WORDLE_AUTH_LINK_VERIFIED_EMAILS` | `true` | Join sign-in methods that share a verified email. |
 | `WORDLE_AUTH_PROVIDER` | `oidc` | `auth0` also closes the Auth0 account when a player deletes theirs. `oidc` works with any provider but leaves it open. |
-| `WORDLE_AUTH0_CLIENT_ID` | unset | `auth0` only. The Machine to Machine app allowed to delete users. |
-| `WORDLE_AUTH0_CLIENT_SECRET` | unset | `auth0` only. **From `secrets/`.** |
+| `WORDLE_AUTH0_DELETION_APP_CLIENT_ID` | unset | `auth0` only. The Machine to Machine app allowed to delete users. |
+| `WORDLE_AUTH0_DELETION_APP_CLIENT_SECRET` | unset | `auth0` only. **From `secrets/`.** |
 | `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required when sign-in is on. |
 | `WORDLE_DATABASE_PASSWORD` | unset | **From `secrets/`.** |
 | `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |

@@ -173,10 +173,10 @@ created_at    TIMESTAMPTZ            issuer         TEXT  \  UNIQUE together
 
      ```
      WORDLE_AUTH_PROVIDER=auth0
-     WORDLE_AUTH0_CLIENT_ID=<the Client ID>
+     WORDLE_AUTH0_DELETION_APP_CLIENT_ID=<the Client ID>
      ```
 
-   - copy **Client Secret** into the file `secrets/wordle_auth0_client_secret`,
+   - copy **Client Secret** into the file `secrets/wordle_auth0_deletion_app_client_secret`,
      on its own, with nothing else in the file.
 
    Grant only `delete:users`: this application's secret can then close

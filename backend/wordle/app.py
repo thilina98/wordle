@@ -83,8 +83,8 @@ def _identity_provider(settings: Settings) -> IdentityProvider:
         return Auth0Provider(
             settings.auth_issuer,
             settings.auth_audience,
-            settings.auth0_client_id,
-            settings.auth0_client_secret,
+            settings.auth0_deletion_app_client_id,
+            settings.auth0_deletion_app_client_secret,
             algorithms=settings.auth_algorithms,
         )
     return OidcProvider(

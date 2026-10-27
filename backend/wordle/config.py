@@ -87,10 +87,13 @@ class Settings(BaseSettings):
     )
 
     # --- Auth0 only: the Machine to Machine application that closes accounts.
-    auth0_client_id: str | None = Field(default=None)
-    auth0_client_secret: str | None = Field(
+    auth0_deletion_app_client_id: str | None = Field(default=None)
+    auth0_deletion_app_client_secret: str | None = Field(
         default=None,
-        description="A secret file (wordle_auth0_client_secret), never an environment variable.",
+        description=(
+            "A secret file (wordle_auth0_deletion_app_client_secret), "
+            "never an environment variable."
+        ),
     )
 
     # --- PostgreSQL: players, and everything else except games in progress.
@@ -173,13 +176,14 @@ class Settings(BaseSettings):
         if not self.database_url:
             raise ValueError("WORDLE_DATABASE_URL is required when WORDLE_AUTH_ISSUER is set")
         if self.auth_provider == "auth0":
-            if not self.auth0_client_id:
+            if not self.auth0_deletion_app_client_id:
                 raise ValueError(
-                    "WORDLE_AUTH0_CLIENT_ID is required when WORDLE_AUTH_PROVIDER is auth0"
+                    "WORDLE_AUTH0_DELETION_APP_CLIENT_ID is required when "
+                    "WORDLE_AUTH_PROVIDER is auth0"
                 )
-            if not self.auth0_client_secret:
+            if not self.auth0_deletion_app_client_secret:
                 raise ValueError(
-                    "secrets/wordle_auth0_client_secret is required when "
+                    "secrets/wordle_auth0_deletion_app_client_secret is required when "
                     "WORDLE_AUTH_PROVIDER is auth0"
                 )
         return self
