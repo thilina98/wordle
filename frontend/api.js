@@ -2,8 +2,8 @@
  * The only file that knows the backend exists.
  *
  * Everything else in the frontend calls these functions and never touches
- * fetch. Requests are anonymous: there is no password, and signing in to an
- * account is not built into the page yet.
+ * fetch. A request carries the player's access token when they are signed in,
+ * and nothing when they are not: anonymous play needs no account.
  */
 
 'use strict';
@@ -19,6 +19,9 @@ const WordleApi = (() => {
     // No storage: nothing to clean up.
   }
 
+  /** Returns the access token to send, or null. Set by the page at startup. */
+  let tokenFor = () => null;
+
   class ApiError extends Error {
     constructor(message, status) {
       super(message);
@@ -29,6 +32,8 @@ const WordleApi = (() => {
   async function request(path, { method = 'GET', body } = {}) {
     const headers = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
+    const token = tokenFor();
+    if (token) headers.Authorization = `Bearer ${token}`;
 
     let response;
     try {
@@ -44,16 +49,30 @@ const WordleApi = (() => {
 
     const payload = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) {
-      throw new ApiError(
+      const error = new ApiError(
         (payload && payload.detail) || `Request failed (${response.status})`,
         response.status,
       );
+      // A 401 for a request that carried a token: the sign-in is no good.
+      error.signInRejected = response.status === 401 && Boolean(token);
+      throw error;
     }
     return payload;
   }
 
   return {
     ApiError,
+
+    /** Where to get the access token from. Called before every request. */
+    useToken(provider) {
+      tokenFor = provider;
+    },
+
+    /** The signed-in player. The first call after signing up creates them. */
+    readMyPlayer: () => request('/api/players/me'),
+
+    /** Delete the signed-in player, their games and their provider account. */
+    deleteMyPlayer: () => request('/api/players/me', { method: 'DELETE' }),
 
     // Anything omitted falls back to the server's default: the ordinary
     // five-letter board with five attempts.

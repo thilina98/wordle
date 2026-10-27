@@ -64,6 +64,57 @@ body {
   text-transform: uppercase;
 }
 
+/* --- Account (header) --- */
+
+.account { position: relative; }
+
+.bar-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 55vw;
+  padding: 7px 12px;
+  font: inherit;
+  font-size: .9rem;
+  font-weight: 600;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-active);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.bar-button:hover { background: #1f1f21; }
+
+.player-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.caret { font-size: .7rem; color: var(--muted); }
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 10;
+  display: grid;
+  min-width: 180px;
+  padding: 6px;
+  background: #1f1f21;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.menu button {
+  padding: 10px 12px;
+  font: inherit;
+  font-size: .95rem;
+  text-align: left;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.menu button:hover { background: #2a2a2d; }
+.menu .menu-danger { color: #fca5a5; }
+
 /* --- Layout --- */
 
 main {
@@ -270,6 +321,25 @@ main {
 
 .primary:hover { background: #4a7d46; }
 .primary:disabled { opacity: .6; cursor: default; }
+
+/* The delete confirmation sits in the middle, not below centre like the
+   result card: there is no board to keep in view behind it. */
+.card-centred { top: 0; }
+
+.actions { display: flex; gap: 10px; }
+.actions button {
+  flex: 1;
+  padding: 13px;
+  font: inherit;
+  font-weight: 600;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.secondary { color: var(--text); background: transparent; border: 1px solid var(--border-active); }
+.secondary:hover { background: #2a2a2d; }
+.danger { color: #fff; background: #b42318; border: 0; }
+.danger:hover { background: #9a1c13; }
+.actions button:disabled { opacity: .6; cursor: default; }
 
 :where(button, input):focus-visible {
   outline: 2px solid #fff;

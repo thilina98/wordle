@@ -145,6 +145,7 @@ variable, or from `backend/.env`. See
 | `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend, in `frontend/.env`. |
+| `WORDLE_AUTH_ISSUER`, `WORDLE_AUTH_AUDIENCE`, `WORDLE_AUTH_LOGIN_APP_CLIENT_ID` | unset | Frontend, in `frontend/.env`: sign-in button. All three or none. See [backend/ACCOUNTS.md](backend/ACCOUNTS.md). |
 | `WORDLE_DEFAULT_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
 | `WORDLE_ACTIVE_GAMES_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |

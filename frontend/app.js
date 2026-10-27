@@ -1,9 +1,10 @@
 /**
  * Wordle — view layer.
  *
- * Holds no game rules and no knowledge of HTTP. The server decides which words
- * are valid and what colour each letter gets; WordleApi does the talking. This
- * file draws the board and collects key presses.
+ * Holds no game rules and no knowledge of HTTP or sign-in. The server decides
+ * which words are valid and what colour each letter gets; WordleApi does the
+ * talking and WordleAuth the signing in. This file draws the board, the account
+ * menu, and collects key presses.
  */
 
 'use strict';
@@ -142,6 +143,17 @@ const el = {
   resultScore: document.getElementById('result-score'),
   resultText: document.getElementById('result-text'),
   again: document.getElementById('again'),
+  account: document.getElementById('account'),
+  signIn: document.getElementById('sign-in'),
+  player: document.getElementById('player'),
+  playerButton: document.getElementById('player-button'),
+  playerName: document.getElementById('player-name'),
+  playerMenu: document.getElementById('player-menu'),
+  signOut: document.getElementById('sign-out'),
+  deleteAccount: document.getElementById('delete-account'),
+  confirmDelete: document.getElementById('confirm-delete'),
+  deleteCancel: document.getElementById('delete-cancel'),
+  deleteConfirm: document.getElementById('delete-confirm'),
 };
 
 /** Server board plus the letters typed but not yet submitted. */
@@ -381,12 +393,15 @@ async function submit() {
   } catch (error) {
     // On success lockInput owns `busy`; on failure release it right away.
     busy = false;
-    if (error.status === 400) {
+    if (error.signInRejected) {
+      await signInLost(error.message);
+      await play();
+    } else if (error.status === 400) {
       toast(error.message, 'error');   // e.g. "Enter a valid word"
       rejectRow();
     } else if (error.status === 404) {
       toast('That game expired. Starting a new one.', 'error');
-      await start(true);
+      await play(true);
     } else {
       toast(error.message, 'error');
     }
@@ -431,13 +446,151 @@ async function start(force = false) {
   if (view.is_over) showResult();
 }
 
-el.again.addEventListener('click', () => {
-  start(true).catch((error) => toast(error.message, 'error'));
+/**
+ * Start or resume a game. If the API refuses the sign-in on the way, carry on
+ * signed out rather than leaving the player without a board.
+ */
+async function play(force = false) {
+  try {
+    await start(force);
+  } catch (error) {
+    if (!error.signInRejected) {
+      toast(error.message, 'error');
+      return;
+    }
+    await signInLost(error.message);
+    await start(force).catch((again) => toast(again.message, 'error'));
+  }
+}
+
+// --- Account --------------------------------------------------------------
+
+/** The signed-in player as the API knows them, or null. */
+let player = null;
+
+function paintAccount() {
+  el.account.hidden = !WordleAuth.enabled;
+  if (!WordleAuth.enabled) return;
+  const signedIn = WordleAuth.isSignedIn();
+  el.signIn.hidden = signedIn;
+  el.player.hidden = !signedIn;
+  el.playerName.textContent =
+    (player && player.display_name) || WordleAuth.profileName() || 'Signed in';
+  if (!signedIn) closeMenu();
+}
+
+function openMenu() {
+  el.playerMenu.hidden = false;
+  el.playerButton.setAttribute('aria-expanded', 'true');
+  el.playerMenu.querySelector('button').focus();
+}
+
+function closeMenu() {
+  el.playerMenu.hidden = true;
+  el.playerButton.setAttribute('aria-expanded', 'false');
+}
+
+const menuOpen = () => !el.playerMenu.hidden;
+const dialogOpen = () => !el.confirmDelete.hidden;
+
+/** Ask the API who is signed in. The first call after signing up creates the player. */
+async function loadPlayer() {
+  player = null;
+  if (WordleAuth.isSignedIn()) {
+    try {
+      player = await WordleApi.readMyPlayer();
+    } catch (error) {
+      if (error.signInRejected) await signInLost(error.message);
+      else toast('Could not load your account. You can keep playing.', 'error');
+    }
+  }
+  paintAccount();
+}
+
+/** The API refused the sign-in: forget it here and carry on signed out. */
+async function signInLost(reason) {
+  await WordleAuth.forget();
+  player = null;
+  paintAccount();
+  toast(
+    reason === 'This account was deleted'
+      ? 'This account was deleted.'
+      : 'Your sign-in expired. Sign in again.',
+    'error',
+  );
+}
+
+el.signIn.addEventListener('click', () => {
+  // The board is saved by id, so the player comes back to the same game.
+  WordleAuth.signIn().catch((error) => {
+    console.error(error);
+    toast('Could not reach the sign-in page. Try again.', 'error');
+  });
 });
+
+el.playerButton.addEventListener('click', () => (menuOpen() ? closeMenu() : openMenu()));
+
+el.signOut.addEventListener('click', () => {
+  closeMenu();
+  WordleAuth.signOut();
+});
+
+el.deleteAccount.addEventListener('click', () => {
+  closeMenu();
+  el.confirmDelete.hidden = false;
+  el.deleteCancel.focus();
+});
+
+el.deleteCancel.addEventListener('click', () => {
+  el.confirmDelete.hidden = true;
+  el.playerButton.focus();
+});
+
+el.deleteConfirm.addEventListener('click', async () => {
+  el.deleteConfirm.disabled = el.deleteCancel.disabled = true;
+  el.deleteConfirm.textContent = 'Deleting…';
+  try {
+    await WordleApi.deleteMyPlayer();
+    // The current game belonged to the account and is gone with it.
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      // Nothing stored; nothing to remove.
+    }
+    await WordleAuth.signOut();   // leaves for the provider, then comes back signed out
+  } catch (error) {
+    el.confirmDelete.hidden = true;
+    if (error.signInRejected) await signInLost(error.message);
+    else toast('Could not delete your account. Nothing was removed. Try again.', 'error');
+  } finally {
+    el.deleteConfirm.disabled = el.deleteCancel.disabled = false;
+    el.deleteConfirm.textContent = 'Delete';
+  }
+});
+
+// Clicking anywhere else closes the menu.
+document.addEventListener('click', (event) => {
+  if (menuOpen() && !el.player.contains(event.target)) closeMenu();
+});
+
+el.again.addEventListener('click', () => play(true));
 
 document.addEventListener('keydown', (event) => {
   if (event.ctrlKey || event.metaKey || event.altKey) return;
   const key = event.key;
+
+  // The menu and the confirmation own the keyboard while they are open, so
+  // typing there never puts letters on the board.
+  if (dialogOpen() || menuOpen()) {
+    if (key === 'Escape') {
+      if (dialogOpen()) el.deleteCancel.click();
+      else {
+        closeMenu();
+        el.playerButton.focus();
+      }
+    }
+    return;
+  }
 
   // A focused button owns its own Enter and Space: "Play again".
   if (key === 'Enter' && event.target instanceof HTMLButtonElement) return;
@@ -449,5 +602,18 @@ document.addEventListener('keydown', (event) => {
 });
 
 buildKeyboard();
+WordleApi.useToken(() => WordleAuth.accessToken());
 
-start().catch((error) => toast(error.message, 'error'));
+(async () => {
+  let message = null;
+  try {
+    message = await WordleAuth.init();   // also finishes a sign-in in progress
+  } catch (error) {
+    console.error(error);
+    message = 'Sign-in is unavailable right now. You can keep playing.';
+  }
+  paintAccount();
+  if (message) toast(message, 'error');
+  await loadPlayer();
+  await play();
+})();

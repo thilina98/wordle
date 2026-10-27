@@ -149,10 +149,23 @@ created_at    TIMESTAMPTZ            issuer         TEXT  \  UNIQUE together
    Google and GitHub. For GitHub, request the `user:email` permission, or
    players with a private email arrive without one and cannot be joined by
    email.
-4. **Create the frontend application** (needed when the frontend is built):
-   a Single Page Application, with the three connections enabled. It must ask
-   for `audience=https://wordle-api` and `scope=openid profile email`, so the
-   access token is meant for this API and can also read the player's profile.
+4. **The login app** (the frontend signs players in through it).
+   Applications → Applications → your login app, which must be a **Single
+   Page Application** (shown as Application Type on its Settings tab). On
+   its Settings tab, enter the address the game page is opened from, in
+   three fields (for local development, `http://localhost:8080`):
+   - **Allowed Callback URLs:** `http://localhost:8080/` (where Auth0 sends
+     the player back after signing in; mind the final slash)
+   - **Allowed Logout URLs:** `http://localhost:8080/`
+   - **Allowed Web Origins:** `http://localhost:8080` (no slash)
+
+   Add the production address to each, comma-separated, when you deploy.
+   On its **Connections** tab, turn on email and password, Google and GitHub.
+   Then put its **Client ID** in `frontend/.env` (see below). The frontend asks
+   for `audience=https://wordle-api` and `scope=openid profile email` by
+   itself. If signing in fails with "not authorized to access resource
+   server", allow the login app on your API: Applications → APIs → Wordle →
+   the tab listing applications.
 5. **Configure the API**, in `backend/.env`:
 
    ```
@@ -183,6 +196,24 @@ created_at    TIMESTAMPTZ            issuer         TEXT  \  UNIQUE together
    accounts and do nothing else. If you later give Auth0 a custom domain,
    keep the issuer on the tenant domain for this, because Auth0 serves its
    Management API only there.
+
+## Configuring the frontend
+
+`frontend/.env` (Docker), or `frontend/config.js` when running the page
+from source. All three or none; with none, the page has no sign-in button:
+
+```
+WORDLE_AUTH_ISSUER=<same as backend/.env>
+WORDLE_AUTH_AUDIENCE=<same as backend/.env>
+WORDLE_AUTH_LOGIN_APP_CLIENT_ID=<the login app's Client ID>
+```
+
+The page signs in through `frontend/auth.js`, which speaks plain OpenID
+Connect through the vendored oidc-client-ts library (`frontend/vendor/`). No
+Auth0 code runs in the browser, so another provider is again a settings
+change. The sign-in is kept in the browser's local storage until the token
+expires (24 hours by Auth0's default); then the player is asked to sign in
+again.
 
 ## Running the PostgreSQL tests
 
