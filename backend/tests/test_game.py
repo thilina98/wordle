@@ -5,11 +5,13 @@ import pytest
 from wordle.game import (
     MIN_ATTEMPTS,
     Colour,
+    Difficulty,
     GameOverError,
     GameState,
     InvalidGuessError,
     attempt_limit,
     default_attempts,
+    difficulty_of,
     evaluate_guess,
 )
 
@@ -224,3 +226,27 @@ class TestAttemptsFollowTheWord:
         game = self.a_game("crane", max_attempts=2)
         game.guess("crane")
         assert game.is_over and game.is_won
+
+
+class TestDifficulty:
+    """Difficulty is the attempt allowance against the word length, never the length."""
+
+    @pytest.mark.parametrize(
+        ("word_length", "max_attempts", "expected"),
+        [
+            (5, 5, Difficulty.NORMAL),
+            (5, 6, Difficulty.EASY),
+            (5, 7, Difficulty.EASY),
+            (5, 4, Difficulty.HARD),
+            (5, 2, Difficulty.HARD),
+            # The same count is a different difficulty at another length.
+            (4, 4, Difficulty.NORMAL),
+            (6, 4, Difficulty.HARD),
+        ],
+    )
+    def test_maps_the_allowance_against_the_length(self, word_length, max_attempts, expected):
+        assert difficulty_of(word_length, max_attempts) is expected
+
+    def test_a_game_knows_its_difficulty(self):
+        game = GameState(target="crane", vocabulary={"crane"}, max_attempts=4)
+        assert game.difficulty is Difficulty.HARD

@@ -18,17 +18,7 @@ Review rather than auto-accept, because no free source is trustworthy enough to
 add words unattended: Wiktionary calls `zzzzz` a word, Datamuse accepts `blorp`,
 `dictionaryapi.dev` is dead, and the system dictionary has no plurals.
 
-## 2. Scoring
-
-Score on guesses used and time taken per guess.
-
-- No time penalty on the first guess — the board is empty, thinking time there
-  measures nothing. no reductions for the first guess.
-- A first-attempt win scores zero on both counts. It is luck, not deduction.
-
-Server must do the timing. A modified client would report one second every time.
-
-## 3. More modes
+## 2. More modes
 
 6 letters / 6 guesses, 6 letters / 5 guesses, and so on.
 

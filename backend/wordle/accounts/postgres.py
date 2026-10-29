@@ -1,26 +1,20 @@
 """PostgreSQL adapter for PlayerRepository.
 
-The only module in the codebase that knows PostgreSQL exists. Another database
-means another adapter beside this one; nothing outside `accounts` changes.
+Knows the accounts tables and nothing else. The connection pool and the
+schema history belong to `wordle.db`, which every PostgreSQL adapter shares.
+Another database means another adapter beside this one; nothing outside
+`accounts` changes.
 """
 
 from __future__ import annotations
 
 import uuid
-from importlib import resources
 
 import psycopg
-from psycopg_pool import ConnectionPool
 
+from ..db import Database
 from .model import Identity, Player, Profile
 from .service import AccountsUnavailable
-
-#: Any constant works; it only has to be the same in every process, so two
-#: servers starting at once do not both run a migration.
-_MIGRATION_LOCK = 0x776F72646C65  # "wordle"
-
-_CONNECT_TIMEOUT = 5
-_POOL_TIMEOUT = 5.0
 
 
 def _is_uuid(value: str) -> bool:
@@ -36,58 +30,15 @@ class _AlreadyRegistered(Exception):
     """A racing request registered the same identity first. Roll back and reread."""
 
 
-def _migrations() -> list[tuple[int, str]]:
-    """(version, sql) for every migration shipped, oldest first."""
-    files = resources.files(__package__).joinpath("migrations")
-    found = []
-    for entry in files.iterdir():
-        name = entry.name
-        if name.endswith(".sql"):
-            found.append((int(name.split("_", 1)[0]), entry.read_text(encoding="utf-8")))
-    return sorted(found)
-
-
 class PostgresPlayerRepository:
-    """Players in PostgreSQL, through a small connection pool.
+    """Players in PostgreSQL, through the shared pool.
 
-    Creating one brings the schema up to date, so the server refuses to start
-    against a database it cannot use rather than failing one sign-in at a time.
+    The database is opened (and migrated) by whoever owns it; this adapter
+    borrows connections and never closes the pool.
     """
 
-    def __init__(self, url: str, *, password: str | None = None, max_connections: int = 5) -> None:
-        kwargs: dict[str, object] = {"connect_timeout": _CONNECT_TIMEOUT, "autocommit": True}
-        if password:
-            kwargs["password"] = password
-        self._pool = ConnectionPool(
-            url,
-            kwargs=kwargs,
-            min_size=1,
-            max_size=max_connections,
-            timeout=_POOL_TIMEOUT,
-            open=False,
-        )
-        self._pool.open(wait=True, timeout=_CONNECT_TIMEOUT * 2)
-        self.migrate()
-
-    def close(self) -> None:
-        self._pool.close()
-
-    def migrate(self) -> None:
-        """Apply every migration not yet applied, each in its own transaction."""
-        with self._pool.connection() as conn, conn.transaction():
-            conn.execute("SELECT pg_advisory_xact_lock(%s)", (_MIGRATION_LOCK,))
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS schema_migrations ("
-                " version    INTEGER     PRIMARY KEY,"
-                " applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
-            )
-            applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
-            for version, sql in _migrations():
-                if version in applied:
-                    continue
-                with conn.transaction():
-                    conn.execute(sql)
-                    conn.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
+    def __init__(self, database: Database) -> None:
+        self._pool = database.pool
 
     # --- PlayerRepository ---------------------------------------------------
 

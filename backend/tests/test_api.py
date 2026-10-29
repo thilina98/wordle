@@ -553,3 +553,118 @@ class TestScoring:
 
     def test_starting_an_unknown_game_is_a_404(self, client):
         assert client.post("/api/games/nope/start").status_code == 404
+
+
+class TestStatistics:
+    """A signed-in player's finished games become statistics; anonymous ones never do."""
+
+    LOSING = ("state", "tasty", "abbey", "geese", "recan")
+
+    def _play(self, client, *words: str) -> dict:
+        game_id = new_game(client)["game_id"]
+        response = None
+        for word in words:
+            response = guess(client, game_id, word)
+            assert response.status_code == 200
+        return response.json() if response else {"game_id": game_id}
+
+    def _stats(self, client, **params) -> dict:
+        response = client.get("/api/players/me/stats", params=params)
+        assert response.status_code == 200
+        return response.json()
+
+    def test_statistics_need_a_signed_in_player(self, client):
+        assert client.get("/api/players/me/stats").status_code == 401
+
+    def test_a_new_player_has_empty_statistics(self, sign_in):
+        stats = self._stats(sign_in("google|1"))
+        assert stats["games"] == 0
+        assert stats["win_percentage"] is None
+        assert stats["current_streak"] is None
+
+    def test_a_finished_game_is_counted_with_the_score_the_player_saw(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        board = self._play(player, "state", "crane")
+        stats = self._stats(player, word_length=5, difficulty="normal")
+        assert (stats["games"], stats["wins"], stats["current_streak"]) == (1, 1, 1)
+        assert stats["highest_score"] == board["score"]["score"]
+        assert stats["guess_distribution"] == {"2": 1}
+
+    def test_a_loss_is_counted(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, *self.LOSING)
+        assert self._stats(player)["losses"] == 1
+
+    def test_anonymous_games_are_never_counted_or_claimed(self, client, sign_in, answer):
+        answer("crane")
+        self._play(client, "crane")
+        assert self._stats(sign_in("google|1"))["games"] == 0
+
+    def test_a_new_game_in_the_same_combination_abandons_the_open_one(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state", "tasty")
+        new_game(player)
+        stats = self._stats(player, word_length=5, difficulty="normal")
+        assert (stats["games"], stats["losses"], stats["current_streak"]) == (1, 1, 0)
+
+    def test_leaving_after_one_guess_is_not_counted(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state")
+        new_game(player)
+        assert self._stats(player)["games"] == 0
+
+    def test_a_new_game_at_another_difficulty_leaves_the_open_one(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        open_game = self._play(player, "state", "tasty")
+        assert player.post("/api/games", json={"max_attempts": 4}).status_code == 201
+        assert self._stats(player)["games"] == 0
+        assert player.get(f"/api/games/{open_game['game_id']}").status_code == 200
+
+    def test_filters_are_checked(self, sign_in):
+        player = sign_in("google|1")
+        assert (
+            player.get("/api/players/me/stats", params={"difficulty": "brutal"}).status_code == 422
+        )
+        assert player.get("/api/players/me/stats", params={"word_length": 1}).status_code == 422
+
+    def test_streaks_only_for_one_combination(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "crane")
+        assert self._stats(player, word_length=5)["current_streak"] is None
+        assert self._stats(player, difficulty="normal")["best_streak"] is None
+        assert self._stats(player, word_length=5, difficulty="normal")["best_streak"] == 1
+
+    def test_an_outage_delays_a_result_and_never_loses_it(
+        self, sign_in, answer, app, stats, monkeypatch
+    ):
+        from wordle.stats import StatsUnavailable
+
+        def down(result):
+            raise StatsUnavailable("down")
+
+        answer("crane")
+        player = sign_in("google|1")
+        with monkeypatch.context() as patched:
+            patched.setattr(stats, "record", down)
+            board = self._play(player, "state", "crane")
+            assert board["is_won"] and board["score"]["score"] > 0
+            assert len(app.state.store.pending_results()) == 1
+
+        assert app.state.recorder.flush() == 1
+        assert self._stats(player)["wins"] == 1
+        assert app.state.store.pending_results() == []
+
+    def test_a_statistics_outage_is_a_503(self, sign_in, stats, monkeypatch):
+        from wordle.stats import StatsUnavailable
+
+        def down(*args, **kwargs):
+            raise StatsUnavailable("down")
+
+        monkeypatch.setattr(stats, "summary", down)
+        assert sign_in("google|1").get("/api/players/me/stats").status_code == 503

@@ -7,7 +7,10 @@ own. The two talk over the routes in api.py and share nothing else.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager, suppress
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,8 +19,21 @@ from .accounts import Accounts, IdentityProvider, SignInDisabled
 from .api import router as api_router
 from .config import Settings, get_settings
 from .game import MIN_ATTEMPTS, default_attempts
+from .scoring import ScoringRules
+from .stats import (
+    RETRY_SECONDS,
+    FixedScoringRules,
+    PlayerStats,
+    ResultRecorder,
+    ScoringRulesSource,
+)
 from .store import GameStore, InMemoryGameStore, SqliteGameStore
 from .words import WordCatalogue, WordListError
+
+if TYPE_CHECKING:
+    from .db import Database
+
+log = logging.getLogger("wordle")
 
 
 def _catalogue(settings: Settings) -> WordCatalogue:
@@ -92,39 +108,96 @@ def _identity_provider(settings: Settings) -> IdentityProvider:
     )
 
 
-def _accounts(settings: Settings) -> Accounts | SignInDisabled:
+def _open_database(settings: Settings) -> Database:
+    """The PostgreSQL database, migrated. Only opened when sign-in is on."""
+    # Imported here, so anonymous-only play never loads the database driver.
+    from .db import Database
+
+    return Database(settings.database_url, password=settings.database_password)
+
+
+def _accounts(settings: Settings, database: Database | None) -> Accounts | SignInDisabled:
     """Sign-in as configured, or anonymous play only."""
     if not settings.sign_in_enabled:
         return SignInDisabled()
-    # Imported here, so anonymous-only play never loads the database driver.
     from .accounts.postgres import PostgresPlayerRepository
 
     return Accounts(
         _identity_provider(settings),
-        PostgresPlayerRepository(settings.database_url, password=settings.database_password),
+        PostgresPlayerRepository(database),
         link_verified_emails=settings.auth_link_verified_emails,
     )
+
+
+def _scoring(
+    settings: Settings, database: Database | None
+) -> tuple[ScoringRulesSource, PlayerStats | None]:
+    """Where scoring constants come from, and where results go.
+
+    With a database, both are PostgreSQL. Without one, the constants come from
+    WORDLE_SCORING_* settings and nothing is recorded: with no sign-in there
+    is no one to record it for.
+    """
+    if database is None:
+        return FixedScoringRules(ScoringRules(**settings.scoring_settings)), None
+    if settings.any_scoring_setting:
+        log.warning(
+            "WORDLE_SCORING_* settings are ignored: scoring comes from the database's "
+            "active scoring version"
+        )
+    from .stats.postgres import PostgresPlayerStats, PostgresScoringRules
+
+    rules = PostgresScoringRules(database)
+    return rules, PostgresPlayerStats(database, rules)
+
+
+async def _retry_unrecorded(recorder: ResultRecorder) -> None:
+    """Record results an outage held back: once at startup, then on a timer."""
+    while True:
+        try:
+            await asyncio.to_thread(recorder.flush)
+        except Exception:  # a bug must not end the loop; the next pass retries
+            log.exception("Recording held-back results failed")
+        await asyncio.sleep(RETRY_SECONDS)
 
 
 def create_app(
     settings: Settings | None = None,
     *,
     accounts: Accounts | SignInDisabled | None = None,
+    stats: PlayerStats | None = None,
+    scoring_rules: ScoringRulesSource | None = None,
 ) -> FastAPI:
-    """Build the app. `accounts` overrides what settings would build, for tests."""
+    """Build the app.
+
+    `accounts`, `stats` and `scoring_rules` override what settings would
+    build, for tests. Give `stats` with `scoring_rules`.
+    """
     settings = settings or get_settings()
 
     catalogue = _catalogue(settings)
     _check_every_length_is_playable(catalogue)
 
+    needs_database = settings.sign_in_enabled and (accounts is None or scoring_rules is None)
+    database = _open_database(settings) if needs_database else None
+    if scoring_rules is None:
+        scoring_rules, stats = _scoring(settings, database)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        retry = None
+        if app.state.recorder is not None:
+            retry = asyncio.create_task(_retry_unrecorded(app.state.recorder))
         yield
+        if retry is not None:
+            retry.cancel()
+            with suppress(asyncio.CancelledError):
+                await retry
         # Release database connections on a clean shutdown.
         with suppress(AttributeError):
             app.state.store.close()
-        with suppress(AttributeError):
-            app.state.accounts.close()
+        if app.state.database is not None:
+            app.state.database.close()
 
     app = FastAPI(
         lifespan=lifespan,
@@ -137,8 +210,12 @@ def create_app(
     )
     app.state.settings = settings
     app.state.catalogue = catalogue
+    app.state.database = database
     app.state.store = _game_store(settings, catalogue)
-    app.state.accounts = accounts if accounts is not None else _accounts(settings)
+    app.state.accounts = accounts if accounts is not None else _accounts(settings, database)
+    app.state.scoring_rules = scoring_rules
+    app.state.stats = stats
+    app.state.recorder = ResultRecorder(app.state.store, stats) if stats is not None else None
 
     # Named origins only. A signed-in player's token travels in a header, not
     # a cookie, so credentialed CORS is not needed and "*" would be a needless

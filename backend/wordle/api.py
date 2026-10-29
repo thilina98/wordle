@@ -11,11 +11,13 @@ from __future__ import annotations
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from .accounts import AccountsUnavailable, AuthenticationError, Player
-from .game import GameOverError, GameState, InvalidGuessError
-from .schemas import CreateGameRequest, GameView, GuessRequest, PlayerView
+from .game import Difficulty, GameOverError, GameState, InvalidGuessError
+from .schemas import CreateGameRequest, GameView, GuessRequest, PlayerView, StatsView
+from .scoring import ScoringRules
+from .stats import ResultRecorder, StatsUnavailable
 from .store import GameStore
 from .words import WordCatalogue
 
@@ -28,6 +30,15 @@ def _store(request: Request) -> GameStore:
 
 def _catalogue(request: Request) -> WordCatalogue:
     return request.app.state.catalogue
+
+
+def _rules(request: Request) -> ScoringRules:
+    return request.app.state.scoring_rules.current()
+
+
+def _recorder(request: Request) -> ResultRecorder | None:
+    """None when there are no statistics: no sign-in, so no one to keep them for."""
+    return request.app.state.recorder
 
 
 def current_player(
@@ -119,7 +130,31 @@ def delete_my_player(request: Request, player: SignedInPlayer) -> None:
         ) from exc
     # After the player, so a database outage leaves everything as it was.
     # Games left over by a failure here are unreachable and expire anyway.
+    # Their statistics went with the player (ON DELETE CASCADE).
     _store(request).delete_owned_by(player.player_id)
+
+
+@router.get("/players/me/stats", response_model=StatsView)
+def read_my_stats(
+    request: Request,
+    player: SignedInPlayer,
+    word_length: Annotated[int | None, Query(ge=2, le=32)] = None,
+    difficulty: Difficulty | None = None,
+) -> StatsView:
+    """The signed-in player's statistics, optionally narrowed to a mode and difficulty.
+
+    Leave both out for every game; give one to see it across the other; give
+    both for one combination, which is the only filter that has streaks.
+    """
+    try:
+        summary = request.app.state.stats.summary(
+            player.player_id, word_length=word_length, difficulty=difficulty
+        )
+    except StatsUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Statistics are unavailable. Try again shortly."
+        ) from exc
+    return StatsView.of(summary)
 
 
 # --- Game -----------------------------------------------------------------
@@ -159,13 +194,21 @@ def create_game(
         # exists because the domain's limits are the real ones: the route
         # should answer for them rather than assume the edge caught everything.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return GameView.of(_store(request).create(game, owner=_viewer(player)), game)
+
+    store, recorder = _store(request), _recorder(request)
+    if player and recorder:
+        # A new game in the same mode and difficulty ends the one left open
+        # there, as a loss. Recorded now, before the new game can end, so its
+        # streak is counted in the order the games were played.
+        if store.abandon_open_games(player.player_id, game.word_length, game.difficulty):
+            recorder.flush()
+    return GameView.of(store.create(game, owner=_viewer(player)), game, _rules(request))
 
 
 @router.get("/games/{game_id}", response_model=GameView)
 def read_game(request: Request, game_id: str, player: MaybePlayer) -> GameView:
     """Current board, for resuming after a reload."""
-    return GameView.of(game_id, _load_game(request, game_id, player))
+    return GameView.of(game_id, _load_game(request, game_id, player), _rules(request))
 
 
 @router.post("/games/{game_id}/start", response_model=GameView)
@@ -180,7 +223,7 @@ def start_game(request: Request, game_id: str, player: MaybePlayer) -> GameView:
     game = _load_game(request, game_id, player)
     game.start_timer(_now())
     _store(request).save(game_id, game)
-    return GameView.of(game_id, game)
+    return GameView.of(game_id, game, _rules(request))
 
 
 @router.post("/games/{game_id}/guesses", response_model=GameView)
@@ -201,4 +244,10 @@ def submit_guess(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     _store(request).save(game_id, game)
-    return GameView.of(game_id, game)
+    recorder = _recorder(request)
+    if player and recorder and game.is_over:
+        # The save left it waiting to be recorded; record it now. An outage
+        # leaves it waiting, and the player still gets their board.
+        recorder.flush()
+    # After recording, which refreshes the rules if the active version moved.
+    return GameView.of(game_id, game, _rules(request))
