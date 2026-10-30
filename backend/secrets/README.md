@@ -11,13 +11,13 @@ prefix, no quotes.
 Create it:
 
 ```bash
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
-printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret
-chmod 600 secrets/wordle_*
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > backend/secrets/wordle_database_password
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > backend/secrets/wordle_auth0_deletion_app_client_secret
+chmod 600 backend/secrets/wordle_*
 ```
 
 The app reads this directory whether or not it is in Docker — `/run/secrets`
-inside a container, `secrets/` when run from source. **Secrets belong here and
+inside a container, `backend/secrets/` when run from source. **Secrets belong here and
 nowhere else.** Never in `backend/.env` or `frontend/.env`: Docker Compose
 hands those to the containers as environment variables, and `docker inspect`
 prints those.

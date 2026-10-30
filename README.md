@@ -51,10 +51,10 @@ cd ..
 cp backend/.env.example backend/.env   # backend settings; defaults suit local
 cp frontend/.env.example frontend/.env # frontend settings (Docker only)
 
-mkdir -p secrets                      # only needed for sign-in; see backend/ACCOUNTS.md
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
-printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
-chmod 600 secrets/wordle_*
+mkdir -p backend/secrets              # only needed for sign-in; see backend/ACCOUNTS.md
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > backend/secrets/wordle_database_password
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > backend/secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
+chmod 600 backend/secrets/wordle_*
 ```
 
 **Terminal 1 — the API:**
@@ -139,9 +139,9 @@ variable, or from `backend/.env`. See
 | `WORDLE_AUTH_LINK_VERIFIED_EMAILS` | `true` | Join sign-in methods that share a verified email. |
 | `WORDLE_AUTH_PROVIDER` | `oidc` | `auth0` also closes the Auth0 account when a player deletes theirs. `oidc` works with any provider but leaves it open. |
 | `WORDLE_AUTH0_DELETION_APP_CLIENT_ID` | unset | `auth0` only. The Machine to Machine app allowed to delete users. |
-| `WORDLE_AUTH0_DELETION_APP_CLIENT_SECRET` | unset | `auth0` only. **From `secrets/`.** |
+| `WORDLE_AUTH0_DELETION_APP_CLIENT_SECRET` | unset | `auth0` only. **From `backend/secrets/`.** |
 | `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required when sign-in is on. |
-| `WORDLE_DATABASE_PASSWORD` | unset | **From `secrets/`.** |
+| `WORDLE_DATABASE_PASSWORD` | unset | **From `backend/secrets/`.** |
 | `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
 | `WORDLE_API_BASE` | `http://localhost:8000` | Frontend, in `frontend/.env`. |
@@ -159,15 +159,15 @@ without an audience, or no database URL) stops it at startup rather than at
 the first sign-in. So does sign-in off with a `WORDLE_SCORING_*` value missing,
 or sign-in on with no active scoring version in the database.
 
-**Secrets live in `secrets/`, never in a `.env` file** — one file per secret,
-the same directory in every environment (`/run/secrets` in Docker, `secrets/`
+**Secrets live in `backend/secrets/`, never in a `.env` file** — one file per secret,
+the same directory in every environment (`/run/secrets` in Docker, `backend/secrets/`
 from source). Compose hands each `.env` file to its container as environment
 variables, so a secret placed there would show up in `docker inspect`.
 
 `backend/.env` and `frontend/.env` hold the per-machine, non-secret settings:
 which URLs the browser uses, sign-in, and the timeouts. Both are gitignored, so
 your laptop's copies and the VPS copies differ. See
-[secrets/README.md](secrets/README.md).
+[backend/secrets/README.md](backend/secrets/README.md).
 
 ## API
 

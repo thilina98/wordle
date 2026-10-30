@@ -23,8 +23,8 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 # source; only its location differs.
 _SECRET_LOCATIONS = (
     Path("/run/secrets"),  # Docker mounts them here
-    Path("secrets"),  # running from the repo root
-    Path("../secrets"),  # running from backend/
+    Path("secrets"),  # running from backend/
+    Path("backend/secrets"),  # running from the repo root
 )
 
 
@@ -231,7 +231,7 @@ class Settings(BaseSettings):
                 )
             if not self.auth0_deletion_app_client_secret:
                 raise ValueError(
-                    "secrets/wordle_auth0_deletion_app_client_secret is required when "
+                    "backend/secrets/wordle_auth0_deletion_app_client_secret is required when "
                     "WORDLE_AUTH_PROVIDER is auth0"
                 )
         return self

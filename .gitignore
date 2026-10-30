@@ -27,8 +27,8 @@ backend/dist/
 backend/data/
 
 # Docker secrets — contents are never committed
-secrets/*
-!secrets/README.md
+backend/secrets/*
+!backend/secrets/README.md
 
 # claude
 .claude/

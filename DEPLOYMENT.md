@@ -243,10 +243,10 @@ Secrets go in files, not in either `.env`. `docker inspect` and `/proc/<pid>/env
 both show a container's environment; neither shows a mounted secret.
 
 ```bash
-mkdir -p secrets
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
-printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
-chmod 600 secrets/wordle_*
+mkdir -p backend/secrets
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > backend/secrets/wordle_database_password
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > backend/secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
+chmod 600 backend/secrets/wordle_*
 ```
 
 To turn sign-in on, also set `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE`
@@ -590,7 +590,7 @@ cd /opt/wordle && git pull && docker compose up -d --build
 docker compose run --rm api python -m wordle.db data-scripts
 ```
 
-**Back up** `secrets/`, `backend/.env`, `frontend/.env`, the games volume and
+**Back up** `backend/secrets/`, `backend/.env`, `frontend/.env`, the games volume and
 the player database:
 
 ```bash
@@ -709,7 +709,7 @@ WantedBy=multi-user.target
 ```
 
 Without Docker there are no mounted secrets, so put the database password in
-`/opt/wordle/secrets/wordle_database_password` and `chmod 600` it.
+`/opt/wordle/backend/secrets/wordle_database_password` and `chmod 600` it.
 
 ```bash
 sudo useradd --system --no-create-home wordle

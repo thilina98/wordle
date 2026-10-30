@@ -143,11 +143,11 @@ services:
 
 secrets:
   wordle_database_password:
-    file: ./secrets/wordle_database_password
+    file: ./backend/secrets/wordle_database_password
   # The Auth0 deletion app's Client Secret. Required when WORDLE_AUTH_PROVIDER=auth0;
   # the file must exist for Docker to start either way.
   wordle_auth0_deletion_app_client_secret:
-    file: ./secrets/wordle_auth0_deletion_app_client_secret
+    file: ./backend/secrets/wordle_auth0_deletion_app_client_secret
 
 volumes:
   wordle-data:

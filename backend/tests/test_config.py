@@ -24,7 +24,7 @@ def no_secrets(tmp_path):
 
     Passing None means "not provided" to pydantic-settings, which then falls
     back to the configured directory -- and a test would quietly read the
-    developer's real secrets/ instead of failing.
+    developer's real backend/secrets/ instead of failing.
     """
     empty = tmp_path / "no-secrets"
     empty.mkdir()
