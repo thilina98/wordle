@@ -1,0 +1,13 @@
+#!/bin/sh
+. "$(dirname "$0")/protected-branches.sh"
+
+branch=$(git symbolic-ref --short -q HEAD)
+
+if is_protected "$branch"; then
+  warn "" \
+    "✋ Commit blocked: '$branch' is a protected branch." \
+    "   Create a branch and commit there instead:" \
+    "     git switch -c <new-branch>" \
+    ""
+  exit 1
+fi

@@ -118,5 +118,7 @@ async function load() {
 api.useToken(() => auth.accessToken());
 
 const account = createAccount({ page: 'stats' });
-await account.start();
-await load();
+// The stats only need the sign-in, so they load alongside the player, not after it.
+const started = account.start();
+await account.signInKnown();
+await Promise.all([started, load()]);
