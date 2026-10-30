@@ -6,9 +6,7 @@
  * and nothing when they are not: anonymous play needs no account.
  */
 
-'use strict';
-
-const WordleApi = (() => {
+export const api = (() => {
   const base = (window.WORDLE_CONFIG && window.WORDLE_CONFIG.apiBase || '').replace(/\/$/, '');
 
   // Left behind by the shared-password version. The server no longer issues
@@ -70,6 +68,18 @@ const WordleApi = (() => {
 
     /** The signed-in player. The first call after signing up creates them. */
     readMyPlayer: () => request('/api/players/me'),
+
+    /**
+     * The signed-in player's statistics. Both filters are optional: leave
+     * them out for every game. Streaks come back only when both are given.
+     */
+    readMyStats: ({ wordLength, difficulty } = {}) => {
+      const query = new URLSearchParams();
+      if (wordLength !== undefined) query.set('word_length', wordLength);
+      if (difficulty !== undefined) query.set('difficulty', difficulty);
+      const suffix = query.toString() ? `?${query}` : '';
+      return request(`/api/players/me/stats${suffix}`);
+    },
 
     /** Delete the signed-in player, their games and their provider account. */
     deleteMyPlayer: () => request('/api/players/me', { method: 'DELETE' }),

@@ -56,6 +56,8 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.bar h1 a { color: inherit; text-decoration: none; }
+
 .bar h1 {
   margin: 0;
   font-size: 1.4rem;
@@ -101,7 +103,8 @@ body {
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
 }
-.menu button {
+.menu button,
+.menu a {
   padding: 10px 12px;
   font: inherit;
   font-size: .95rem;
@@ -112,8 +115,17 @@ body {
   border-radius: 6px;
   cursor: pointer;
 }
-.menu button:hover { background: #2a2a2d; }
+.menu a { text-decoration: none; }
+.menu button:hover,
+.menu a:hover { background: #2a2a2d; }
 .menu .menu-danger { color: #fca5a5; }
+
+/* Sets the destructive item apart from the everyday ones. */
+.menu-separator {
+  height: 1px;
+  margin: 6px 4px;
+  background: var(--border);
+}
 
 /* --- Layout --- */
 

@@ -15,25 +15,12 @@
   <header class="bar">
     <h1>Wordle</h1>
 
-    <!-- Signing in is optional. Hidden entirely when sign-in is not set up. -->
-    <nav id="account" class="account" aria-label="Account" hidden>
-      <button id="sign-in" class="bar-button" type="button" hidden>Sign in</button>
-      <div id="player" class="player" hidden>
-        <button id="player-button" class="bar-button" type="button"
-                aria-haspopup="menu" aria-expanded="false" aria-controls="player-menu">
-          <span id="player-name" class="player-name"></span>
-          <span class="caret" aria-hidden="true">&#9662;</span>
-        </button>
-        <div id="player-menu" class="menu" role="menu" hidden>
-          <button id="sign-out" type="button" role="menuitem">Sign out</button>
-          <button id="delete-account" class="menu-danger" type="button" role="menuitem">Delete account</button>
-        </div>
-      </div>
-    </nav>
+    <!-- Signing in is optional. Filled by account.js; hidden when sign-in is not set up. -->
+    <nav id="account" class="account" aria-label="Account" hidden></nav>
   </header>
 
   <main>
-    <!-- Tiles and keys are built by app.js from the board the API returns. -->
+    <!-- Tiles and keys are built by game.js and keyboard.js from the board the API returns. -->
     <div id="board" class="board" role="grid" aria-label="Guesses"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <div id="keyboard" class="keyboard" aria-label="Keyboard"></div>
@@ -49,23 +36,8 @@
   </div>
 </section>
 
-<div id="confirm-delete" class="result" hidden>
-  <div class="card card-centred" role="alertdialog" aria-modal="true"
-       aria-labelledby="delete-title" aria-describedby="delete-text">
-    <h2 id="delete-title">Delete account?</h2>
-    <p id="delete-text">Your player, your games and your sign-in are removed for good.
-      You can sign up again later, starting from nothing.</p>
-    <div class="actions">
-      <button id="delete-cancel" class="secondary" type="button">Cancel</button>
-      <button id="delete-confirm" class="danger" type="button">Delete</button>
-    </div>
-  </div>
-</div>
-
 <script src="config.js"></script>
 <script src="vendor/oidc-client-ts-3.4.1.min.js"></script>
-<script src="auth.js"></script>
-<script src="api.js"></script>
-<script src="app.js"></script>
+<script type="module" src="main.js"></script>
 </body>
 </html>

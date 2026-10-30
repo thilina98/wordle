@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#121213">
+<title>Statistics · Wordle</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="stats.css">
+</head>
+<body class="page">
+
+<header class="bar">
+  <h1><a href="./">Wordle</a></h1>
+
+  <!-- Filled by account.js; hidden when sign-in is not set up. -->
+  <nav id="account" class="account" aria-label="Account" hidden></nav>
+</header>
+
+<main class="stats">
+  <div class="stats-heading">
+    <h2>Statistics</h2>
+    <a class="secondary-link" href="./">Back to game</a>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <p id="stats-status" class="stats-status" role="status" aria-live="polite"></p>
+
+  <!-- Filled by stats.js from GET /api/players/me/stats. -->
+  <div id="stats-body" hidden>
+    <dl class="stats-headline">
+      <div><dt>Played</dt><dd data-stat="games"></dd></div>
+      <div><dt>Win %</dt><dd data-stat="win-percentage"></dd></div>
+      <div><dt>Wins</dt><dd data-stat="wins"></dd></div>
+      <div><dt>Losses</dt><dd data-stat="losses"></dd></div>
+    </dl>
+
+    <h3>Score</h3>
+    <dl class="stats-list">
+      <div><dt>Total</dt><dd data-stat="total-score"></dd></div>
+      <div><dt>Highest</dt><dd data-stat="highest-score"></dd></div>
+      <div><dt>Average</dt><dd data-stat="average-score"></dd></div>
+    </dl>
+    <p class="stats-note">Average counts scored games only: losses and first-guess wins are left out.</p>
+
+    <h3>Wins</h3>
+    <dl class="stats-list">
+      <div><dt>First guess</dt><dd data-stat="first-attempt-wins"></dd></div>
+      <div><dt>Last guess</dt><dd data-stat="last-attempt-wins"></dd></div>
+      <div><dt>Fastest</dt><dd data-stat="fastest-win"></dd></div>
+      <div><dt>Average time</dt><dd data-stat="average-win"></dd></div>
+    </dl>
+
+    <h3>Guess distribution</h3>
+    <div id="stat-distribution" class="distribution"></div>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script src="vendor/oidc-client-ts-3.4.1.min.js"></script>
+<script type="module" src="stats.js"></script>
+</body>
+</html>
