@@ -40,11 +40,11 @@ never 80 or 443. Two consequences:
 - You cannot get an HTTPS certificate for that address, because you cannot
   prove you own it.
 
-**Why fact 2 matters more than it looks.** This site is protected by a password.
-Over plain HTTP, that password crosses the network in clear text. Anyone
-between the visitor and your VPS can read it — a café Wi-Fi, an ISP, a hop in
-between. If you only ever open the site from your own network, that risk is
-yours to take. If you send the link to other people, get HTTPS.
+**Why fact 2 matters more than it looks.** Signed-in players send a sign-in
+token with every request. Over plain HTTP that token crosses the network in
+clear text, and anyone between the visitor and your VPS can copy it and play
+as them. Identity providers also refuse to send players back to a plain-HTTP
+site that is not localhost. Anonymous play works over HTTP; sign-in needs HTTPS.
 
 ---
 
@@ -228,40 +228,46 @@ cd /opt/wordle
 
 ---
 
-## Step 3: set the two secrets
+## Step 3: set the database secret
 
-The app will not start without these. That is on purpose — a default password is
-not a password.
+The game itself needs no secrets: anyone can play without an account. The one
+secret is the password for the PostgreSQL database that holds player accounts.
 
 ```bash
 cd /opt/wordle
-cp .env.example .env
-
-# Generate a real signing key
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
 ```
 
-Secrets go in files, not in `.env`. `docker inspect` and `/proc/<pid>/environ`
+Secrets go in files, not in either `.env`. `docker inspect` and `/proc/<pid>/environ`
 both show a container's environment; neither shows a mounted secret.
 
 ```bash
 mkdir -p secrets
-printf '%s' 'the-password-you-will-share' > secrets/wordle_password
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
 chmod 600 secrets/wordle_*
 ```
 
-Everything else goes in `.env`:
+To turn sign-in on, also set `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE`
+in `backend/.env`. Setting up the identity provider is in
+[backend/ACCOUNTS.md](backend/ACCOUNTS.md). Sign-in through a provider needs
+the site on HTTPS (Option A, C or D below); plain HTTP works only for
+anonymous play.
+
+The two browser URLs go one in each file. Both are what the BROWSER sees.
+Fill them in after Step 6, when you know your real URLs.
 
 ```ini
-# Both of these are what the BROWSER sees. Fill them in after Step 6,
-# when you know your real URLs.
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=http://[your-ipv6]:8080
+
+# frontend/.env
 WORDLE_API_BASE=http://[your-ipv6]:8000
 ```
 
 ```bash
-chmod 600 .env
+chmod 600 backend/.env frontend/.env
 ```
 
 **These last two are the setting people get wrong.** They are not container
@@ -273,14 +279,25 @@ addresses. They are the URLs a visitor's browser uses.
   where the browser loaded the page from — scheme, host and port, no trailing
   slash.
 
-Symptom of getting them wrong: the password page loads fine, then logging in
-does nothing. The browser console shows a CORS error, or the page says
+Symptom of getting them wrong: the page loads fine, then starting a game does
+nothing. The browser console shows a CORS error, or the page says
 "Cannot reach the server". Comma-separate the origins if you have more than one
 way in (an IPv6 URL and a Tailscale URL, say).
 
 ---
 
 ## Step 4: start it
+
+With sign-in on, seed the scoring rules first. Once per database; the server
+refuses to start without them. Running it again only reports that it already ran.
+
+```bash
+cd /opt/wordle
+docker compose build
+docker compose run --rm api python -m wordle.db run-data-script 0001_seed_scoring_version_1
+```
+
+Then:
 
 ```bash
 cd /opt/wordle
@@ -300,7 +317,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/   # web: expect 200
 - **Both containers run as non-root** with a read-only root filesystem, all
   Linux capabilities dropped, and `no-new-privileges`. The only writable paths
   are the volume and a small tmpfs.
-- **Secrets are mounted files**, not environment variables.
+- **The database password is a mounted file**, not an environment variable.
 
 Verify all of that after it starts:
 
@@ -308,7 +325,7 @@ Verify all of that after it starts:
 docker exec wordle-api id                     # uid=10001, not root
 docker exec wordle-api touch /app/x           # must fail: read-only
 docker exec wordle-api touch /data/x          # must succeed: the volume
-docker exec wordle-api ls -l /run/secrets/    # the two secret files
+docker exec wordle-api ls -l /run/secrets/    # wordle_database_password
 docker inspect wordle-api --format '{{json .Config.Env}}' | grep -c PASSWORD   # 0
 ```
 
@@ -412,8 +429,9 @@ sudo tailscale funnel status                   # shows both public URLs
 Now fill in the two URLs, using the hostname Funnel printed:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=https://your-box.your-tailnet.ts.net
+# frontend/.env
 WORDLE_API_BASE=https://your-box.your-tailnet.ts.net:8443
 ```
 
@@ -428,8 +446,7 @@ Worth knowing:
 
 - The name is always `*.ts.net`. No custom domain.
 - Funnel is still labelled beta.
-- Anyone with the link can reach the page. That is what you want here — your
-  password is what keeps them out.
+- Anyone with the link can reach the page and play. That is what you want here.
 
 ### Option B — the NAT IPv4 port (simplest, no HTTPS)
 
@@ -437,16 +454,16 @@ You need **two** ports from your forwarded range. Say the panel forwards public
 `20001` to your `8080` and public `20002` to your `8000`:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=http://<shared-ipv4>:20001
+# frontend/.env
 WORDLE_API_BASE=http://<shared-ipv4>:20002
 ```
 
 Then the site is at `http://<shared-ipv4>:20001`.
 
-Nothing to install. Works for every visitor. But the password travels in clear
-text, so treat this as a "just me, just testing" option, or pair it with a
-password you use nowhere else.
+Nothing to install. Works for every visitor, but anonymous play only: without
+HTTPS, sign-in cannot work.
 
 **If your provider cannot choose the internal port.** Some panels forward
 `public 20001 → your 20001` with no way to map it to 8080. Then the containers
@@ -498,8 +515,9 @@ certificate — the only option that avoids the two-port dance:
 Then both URLs are the same origin, and CORS stops mattering:
 
 ```ini
-# .env
+# backend/.env
 WORDLE_ALLOWED_ORIGINS=https://[2001:db8::1]
+# frontend/.env
 WORDLE_API_BASE=https://[2001:db8::1]
 ```
 
@@ -519,7 +537,7 @@ does not intend it for permanent use. Good for showing someone the site in the
 next ten minutes; not for keeping it up.
 
 Awkward here, because you would need a **second** tunnel for the API and both
-random URLs change on every restart, so `.env` goes stale each time. Fine for a
+random URLs change on every restart, so both `.env` files go stale each time. Fine for a
 ten-minute demo, painful beyond that. Use Option A if you want it to stay up.
 
 If your VPS ever loses outbound IPv4, add `--edge-ip-version 6`. `auto` picks
@@ -540,9 +558,8 @@ curl -s -o /dev/null -w "%{http_code}\n" -X POST localhost:8000/api/games
 # The API must serve no pages: 404
 curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/
 
-# A real login, end to end
-curl -s -X POST localhost:8000/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"YOUR-PASSWORD"}'
+# Sign-in is wired up: 401 without a token (503 means the issuer is wrong)
+curl -s -o /dev/null -w "%{http_code}\n" localhost:8000/api/players/me
 ```
 
 Then check the frontend picked up the right API base:
@@ -553,7 +570,7 @@ curl -s localhost:8080/config.js     # must show your public API URL
 
 Finally open the site on your phone, on mobile data rather than your own Wi-Fi.
 That is the test that catches "works for me only" — especially with Option C.
-If the page loads but login does nothing, open the browser console: a CORS
+If the page loads but nothing works, open the browser console: a CORS
 error means `WORDLE_ALLOWED_ORIGINS` does not match where the page came from.
 
 ---
@@ -569,15 +586,19 @@ docker stats --no-stream              # what it is using
 # Update after pushing changes
 cd /opt/wordle && git pull && docker compose up -d --build
 
-# Change the password. Everyone is logged out.
-printf '%s' 'new-password' > secrets/wordle_password && docker compose up -d
+# See which data scripts a release added, and run any marked todo before it starts
+docker compose run --rm api python -m wordle.db data-scripts
 ```
 
-**Back up** `secrets/`, `.env`, and the volume:
+**Back up** `secrets/`, `backend/.env`, `frontend/.env`, the games volume and
+the player database:
 
 ```bash
 docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/wordle-data.tar.gz -C /data .
+
+# Players and their statistics. This one matters: it is the only record of who owns what.
+docker exec wordle-db pg_dump -U wordle -Fc wordle > wordle-players.dump
 ```
 
 **Restore:**
@@ -587,8 +608,10 @@ docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
   tar xzf /backup/wordle-data.tar.gz -C /data
 ```
 
-The volume holds games in progress. Losing it is not a disaster — players get a
-fresh board — but there is no reason to.
+The `wordle-data` volume holds games in progress. Losing it is not a
+disaster — players get a fresh board — but there is no reason to. Restore the
+player database with
+`docker exec -i wordle-db pg_restore -U wordle -d wordle --clean < wordle-players.dump`.
 
 ### Developing against it
 
@@ -609,7 +632,8 @@ networking, which is what makes this work on a Mac or Windows machine.
 restart wipes them and players get "that game expired" and a fresh board. Fine
 for a word game; know that it is the behaviour.
 
-**The two URLs in `.env` are browser URLs, not container URLs.** This is the
+**The two URLs in `backend/.env` and `frontend/.env` are browser URLs, not
+container URLs.** This is the
 single most common way to break the split setup. `WORDLE_API_BASE` must be
 reachable from a visitor's browser; `localhost` works only when the visitor is
 on the VPS itself. Change either URL and you must run `docker compose up -d`
@@ -629,9 +653,9 @@ the console says so. Both must be the same scheme.
 written, because it uses host networking. It becomes an issue the moment
 someone switches it to `-p`.
 
-**The login throttle is per process.** Ten wrong passwords locks that IP out for
-five minutes. It is a speed bump, not a rate limiter. If the site is on the open
-internet and you care, put a real limit in front of it — Cloudflare or Caddy.
+**There is no rate limit.** Anyone can start games without signing in. If the
+site is on the open internet, put a real limit in front of it — Cloudflare or
+Caddy. Sign-in attempts are throttled by the identity provider, not here.
 
 **Hermes Agent and Wordle both want to be up.** Give Wordle the 512 MB limit the
 compose file already sets, so a runaway container cannot starve Hermes.
@@ -666,8 +690,8 @@ After=network-online.target
 Type=exec
 User=wordle
 WorkingDirectory=/opt/wordle/backend
-EnvironmentFile=/opt/wordle/.env
-Environment=WORDLE_DATA_DIR=/var/lib/wordle
+EnvironmentFile=/opt/wordle/backend/.env
+Environment=WORDLE_ACTIVE_GAMES_DB_PATH=/var/lib/wordle/games.db
 ExecStart=/opt/wordle/backend/.venv/bin/uvicorn wordle.app:create_app \
   --factory --host :: --port 8000 --workers 1 \
   --proxy-headers --forwarded-allow-ips '*'
@@ -684,8 +708,8 @@ ReadWritePaths=/var/lib/wordle
 WantedBy=multi-user.target
 ```
 
-Without Docker there are no mounted secrets, so put the password and key in
-`/opt/wordle/.env` and `chmod 600` it.
+Without Docker there are no mounted secrets, so put the database password in
+`/opt/wordle/secrets/wordle_database_password` and `chmod 600` it.
 
 ```bash
 sudo useradd --system --no-create-home wordle

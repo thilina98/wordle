@@ -9,7 +9,8 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 
 USER root
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html style.css app.js api.js config.js /usr/share/nginx/html/
+COPY index.html stats.html style.css stats.css *.js /usr/share/nginx/html/
+COPY vendor/ /usr/share/nginx/html/vendor/
 COPY docker-entrypoint.d-10-api-base.sh /docker-entrypoint.d/10-api-base.sh
 RUN chmod 0755 /docker-entrypoint.d/10-api-base.sh \
     && chown -R nginx:nginx /usr/share/nginx/html

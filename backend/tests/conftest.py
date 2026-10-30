@@ -5,12 +5,38 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.fakes import FakeIdentityProvider
+from wordle.accounts import Accounts, InMemoryPlayerRepository
 from wordle.app import create_app
 from wordle.config import Settings
+from wordle.scoring import ScoringRules
+from wordle.stats import FixedScoringRules, InMemoryPlayerStats
 
-PASSWORD = "open-sesame"
-SECRET_KEY = "test-secret-key-at-least-16"
 ORIGIN = "http://localhost:8080"
+#: Scoring version 1, as data script 0001_seed_scoring_version_1 seeds it.
+RULES = ScoringRules(
+    max_base=100.0,
+    last_attempt_ratio=0.2,
+    time_bonus_cap=0.20,
+    seconds_per_letter=60.0,
+    difficulty_step=1.25,
+    normal_max_score=10.0,
+    score_precision=2,
+    version=1,
+)
+#: The same rules as WORDLE_SCORING_* settings, for running without a database.
+SCORING_SETTINGS = {
+    f"scoring_{name}" if name != "score_precision" else "scoring_precision": getattr(RULES, name)
+    for name in (
+        "max_base",
+        "last_attempt_ratio",
+        "time_bonus_cap",
+        "seconds_per_letter",
+        "difficulty_step",
+        "normal_max_score",
+        "score_precision",
+    )
+}
 ANSWERS = ["crane", "state", "tasty", "abbey", "geese"]
 # Valid guesses that are deliberately not answers, so tests can tell the two
 # lists apart.
@@ -37,19 +63,46 @@ def word_lists_dir(tmp_path) -> Path:
 
 @pytest.fixture
 def settings(word_lists_dir, tmp_path) -> Settings:
+    # _env_file=None: never read the developer's real backend/.env, which may
+    # turn sign-in on and point at a real database.
     return Settings(
-        password=PASSWORD,
-        secret_key=SECRET_KEY,
+        _env_file=None,
         word_lists_dir=word_lists_dir,
         allowed_origins=[ORIGIN],
         # max_attempts left unset: games derive it from their word length.
-        data_dir=tmp_path / "state",
+        active_games_db_path=tmp_path / "state" / "games.db",
+        **SCORING_SETTINGS,
     )
 
 
 @pytest.fixture
-def app(settings):
-    app = create_app(settings)
+def provider() -> FakeIdentityProvider:
+    return FakeIdentityProvider()
+
+
+@pytest.fixture
+def players() -> InMemoryPlayerRepository:
+    return InMemoryPlayerRepository()
+
+
+@pytest.fixture
+def accounts(provider, players) -> Accounts:
+    return Accounts(provider, players)
+
+
+@pytest.fixture
+def scoring_rules() -> FixedScoringRules:
+    return FixedScoringRules(RULES)
+
+
+@pytest.fixture
+def stats(scoring_rules) -> InMemoryPlayerStats:
+    return InMemoryPlayerStats(scoring_rules)
+
+
+@pytest.fixture
+def app(settings, accounts, stats, scoring_rules):
+    app = create_app(settings, accounts=accounts, stats=stats, scoring_rules=scoring_rules)
     yield app
     # The sqlite store holds an open connection; tests do not run lifespan.
     close = getattr(app.state.store, "close", None)
@@ -58,23 +111,21 @@ def app(settings):
 
 
 @pytest.fixture
-def anon(app) -> TestClient:
-    """Client with no token."""
+def client(app) -> TestClient:
+    """An anonymous player: no token, which is how most people play."""
     return TestClient(app)
 
 
-def obtain_token(client: TestClient, password: str = PASSWORD) -> str:
-    response = client.post("/api/login", json={"password": password})
-    assert response.status_code == 200, response.text
-    return response.json()["token"]
-
-
 @pytest.fixture
-def client(app) -> TestClient:
-    """Client carrying a valid token on every request."""
-    client = TestClient(app)
-    client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
-    return client
+def sign_in(app, provider):
+    """A client signed in as a given person at the fake identity provider."""
+
+    def build(subject: str, **profile) -> TestClient:
+        client = TestClient(app)
+        client.headers["Authorization"] = f"Bearer {provider.person(subject, **profile)}"
+        return client
+
+    return build
 
 
 @pytest.fixture
@@ -86,13 +137,10 @@ def make_client():
     """
     built = []
 
-    def build(settings: Settings, login: bool = True) -> TestClient:
+    def build(settings: Settings) -> TestClient:
         app = create_app(settings)
         built.append(app)
-        client = TestClient(app)
-        if login:
-            client.headers["Authorization"] = f"Bearer {obtain_token(client)}"
-        return client
+        return TestClient(app)
 
     yield build
     for app in built:

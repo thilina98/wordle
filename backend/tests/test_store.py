@@ -6,8 +6,8 @@ specific to durability live in TestSqliteDurability at the bottom.
 
 import pytest
 
-from wordle.game import GameState
-from wordle.store import InMemoryGameStore, SqliteGameStore
+from wordle.game import Difficulty, GameState
+from wordle.store import InMemoryGameStore, Ownership, SqliteGameStore
 
 VOCABULARY = frozenset({"crane", "state", "tasty"})
 
@@ -34,6 +34,9 @@ def make_store(request, tmp_path):
 
     def build(**kwargs):
         if request.param == "memory":
+            if "clock" in kwargs:
+                # One clock for both, so the two stores report the same times.
+                kwargs.setdefault("wall_clock", kwargs["clock"])
             store = InMemoryGameStore(**kwargs)
         else:
             kwargs.setdefault("clock", None)
@@ -76,6 +79,41 @@ class TestGameStoreContract:
 
     def test_delete_is_idempotent(self, make_store):
         make_store().delete("nope")  # must not raise
+
+    def test_an_unowned_game_is_visible_to_everyone(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.get(game_id) is not None
+        assert store.get(game_id, viewer="player-1") is not None
+
+    def test_an_owned_game_is_visible_to_its_owner_only(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-1")
+        assert store.get(game_id, viewer="player-1") is not None
+        assert store.get(game_id, viewer="player-2") is None
+        assert store.get(game_id) is None
+
+    def test_ownership_survives_a_save(self, make_store):
+        store = make_store()
+        game = a_game()
+        game_id = store.create(game, owner="player-1")
+        game.guess("crane")
+        store.save(game_id, game)
+        assert store.get(game_id) is None
+        assert store.get(game_id, viewer="player-1") is not None
+
+    def test_delete_owned_by_removes_only_that_players_games(self, make_store):
+        store = make_store()
+        mine = [store.create(a_game(), owner="player-1") for _ in range(2)]
+        theirs = store.create(a_game(), owner="player-2")
+        anonymous = store.create(a_game())
+        assert store.delete_owned_by("player-1") == 2
+        assert all(store.get(g, viewer="player-1") is None for g in mine)
+        assert store.get(theirs, viewer="player-2") is not None
+        assert store.get(anonymous) is not None
+
+    def test_delete_owned_by_with_no_games_is_harmless(self, make_store):
+        assert make_store().delete_owned_by("nobody") == 0
 
     def test_saved_guesses_are_read_back(self, make_store):
         store = make_store()
@@ -139,11 +177,198 @@ class TestGameStoreContract:
         assert len(store) == 5
 
 
+def played(game: GameState, *guesses: str, at: float = 0.0) -> GameState:
+    """Make guesses one second apart, starting at `at`."""
+    for i, word in enumerate(guesses):
+        game.guess(word, now=at + i)
+    return game
+
+
+class TestResultsWaitingToBeRecorded:
+    """Owned games that are over wait in the store until statistics take them."""
+
+    OWNER = "player-1"
+
+    def test_an_owned_game_saved_finished_waits_to_be_recorded(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner=self.OWNER)
+        game = played(store.get(game_id, viewer=self.OWNER), "state", "crane", at=500.0)
+        store.save(game_id, game)
+        [pending] = store.pending_results()
+        assert (pending.game_id, pending.owner, pending.abandoned) == (game_id, self.OWNER, False)
+        assert pending.ended_at == 501.0
+        assert pending.game.is_won
+
+    def test_unowned_and_unfinished_games_have_nothing_to_record(self, make_store):
+        store = make_store()
+        anonymous = store.create(a_game())
+        store.save(anonymous, played(store.get(anonymous), "crane"))
+        unfinished = store.create(a_game(), owner=self.OWNER)
+        store.save(unfinished, played(store.get(unfinished, viewer=self.OWNER), "state"))
+        assert store.pending_results() == []
+
+    def test_a_recorded_game_stays_visible_and_stops_waiting(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "crane"))
+        store.mark_recorded(game_id)
+        assert store.pending_results() == []
+        assert store.get(game_id, viewer=self.OWNER).is_won
+        # Saving it again does not queue it again.
+        store.save(game_id, store.get(game_id, viewer=self.OWNER))
+        assert store.pending_results() == []
+
+    def test_waiting_results_come_out_earliest_ended_first(self, make_store):
+        store = make_store()
+        late = store.create(a_game(), owner=self.OWNER)
+        early = store.create(a_game(), owner=self.OWNER)
+        store.save(late, played(store.get(late, viewer=self.OWNER), "crane", at=900.0))
+        store.save(early, played(store.get(early, viewer=self.OWNER), "crane", at=100.0))
+        assert [p.game_id for p in store.pending_results()] == [early, late]
+
+    def test_a_new_game_abandons_the_open_one_in_the_same_combination(self, make_store):
+        store = make_store()
+        open_id = store.create(a_game(), owner=self.OWNER)
+        store.save(open_id, played(store.get(open_id, viewer=self.OWNER), "state", "tasty"))
+        assert store.abandon_open_games(self.OWNER, 5, Difficulty.NORMAL) == 1
+        [pending] = store.pending_results()
+        assert (pending.game_id, pending.abandoned) == (open_id, True)
+        # An abandoned game cannot be played on.
+        assert store.get(open_id, viewer=self.OWNER) is None
+
+    def test_one_guess_is_not_enough_to_abandon(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "state"))
+        assert store.abandon_open_games(self.OWNER, 5, Difficulty.NORMAL) == 0
+        assert store.get(game_id, viewer=self.OWNER) is not None
+
+    def test_other_combinations_and_players_are_left_alone(self, make_store):
+        store = make_store()
+        hard = store.create(GameState("crane", VOCABULARY, max_attempts=4), owner=self.OWNER)
+        theirs = store.create(a_game(), owner="player-2")
+        for game_id, owner in ((hard, self.OWNER), (theirs, "player-2")):
+            store.save(game_id, played(store.get(game_id, viewer=owner), "state", "tasty"))
+        assert store.abandon_open_games(self.OWNER, 5, Difficulty.NORMAL) == 0
+        assert store.abandon_open_games(self.OWNER, 6, Difficulty.HARD) == 0
+        assert store.abandon_open_games(self.OWNER, 5, Difficulty.HARD) == 1
+
+    def test_a_recorded_abandoned_game_is_gone(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "state", "tasty"))
+        store.abandon_open_games(self.OWNER, 5, Difficulty.NORMAL)
+        store.mark_recorded(game_id)
+        assert len(store) == 0
+
+    def test_expiring_abandons_a_game_with_two_guesses(self, make_store):
+        clock = FakeClock()
+        store = make_store(ttl_seconds=60, clock=clock)
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "state", "tasty"))
+        last_touched = clock.now
+        clock.advance(61)
+        store.create(a_game())  # purges
+        [pending] = store.pending_results()
+        assert (pending.game_id, pending.abandoned) == (game_id, True)
+        assert pending.ended_at == last_touched
+
+    def test_expiring_drops_a_game_with_one_guess(self, make_store):
+        clock = FakeClock()
+        store = make_store(ttl_seconds=60, clock=clock)
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "state"))
+        clock.advance(61)
+        store.create(a_game())
+        assert store.pending_results() == []
+        assert len(store) == 1
+
+    def test_a_waiting_result_outlives_its_ttl_and_the_capacity(self, make_store):
+        clock = FakeClock()
+        store = make_store(ttl_seconds=60, max_games=1, clock=clock)
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "crane"))
+        clock.advance(61)
+        store.create(a_game())
+        assert [p.game_id for p in store.pending_results()] == [game_id]
+
+    def test_deleting_a_player_drops_their_waiting_results(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner=self.OWNER)
+        store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "crane"))
+        store.delete_owned_by(self.OWNER)
+        assert store.pending_results() == []
+
+
+class TestClaiming:
+    """A player who signs in before their first guess takes over the anonymous game."""
+
+    def test_an_anonymous_game_with_no_guesses_is_claimed(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.claim(game_id, "player-1") is Ownership.CLAIMED
+        assert store.get(game_id, viewer="player-1") is not None
+        assert store.get(game_id) is None  # no longer open to anyone
+
+    def test_a_claimed_game_counts_once_finished(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        store.claim(game_id, "player-1")
+        store.save(game_id, played(store.get(game_id, viewer="player-1"), "crane"))
+        assert [p.owner for p in store.pending_results()] == ["player-1"]
+
+    def test_claiming_your_own_game_leaves_it_yours(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-1")
+        assert store.claim(game_id, "player-1") is Ownership.OWNED
+
+    def test_a_game_with_a_guess_stays_anonymous(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        store.save(game_id, played(store.get(game_id), "state"))
+        assert store.claim(game_id, "player-1") is Ownership.NOT_OWNED
+        assert store.get(game_id) is not None  # still anyone's
+
+    def test_someone_elses_game_is_never_taken(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-2")
+        assert store.claim(game_id, "player-1") is Ownership.NOT_OWNED
+        assert store.get(game_id, viewer="player-2") is not None
+
+    def test_the_first_claim_wins(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.claim(game_id, "player-1") is Ownership.CLAIMED
+        assert store.claim(game_id, "player-2") is Ownership.NOT_OWNED
+
+    def test_an_unknown_game_is_not_owned(self, make_store):
+        assert make_store().claim("nope", "player-1") is Ownership.NOT_OWNED
+
+
 class TestSqliteDurability:
     """The point of the sqlite store: a destroyed container loses nothing."""
 
     def _store(self, path, **kwargs):
         return SqliteGameStore(path, vocabulary_for=lambda length: VOCABULARY, **kwargs)
+
+    def test_a_database_from_before_accounts_opens_and_its_games_are_unowned(self, tmp_path):
+        import sqlite3
+
+        path = tmp_path / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                "CREATE TABLE games (id TEXT PRIMARY KEY, target TEXT NOT NULL,"
+                " max_attempts INTEGER NOT NULL, attempts TEXT NOT NULL,"
+                " touched_at REAL NOT NULL)"
+            )
+            conn.execute("INSERT INTO games VALUES ('old', 'crane', 5, '[]', 9e12)")
+        conn.close()
+        store = self._store(path, clock=lambda: 9e12)
+        try:
+            assert store.get("old", viewer="anyone") is not None
+            assert store.create(a_game(), owner="player-1")
+        finally:
+            store.close()
 
     def test_a_game_survives_the_process_that_made_it(self, tmp_path):
         path = tmp_path / "games.db"

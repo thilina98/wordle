@@ -1,8 +1,11 @@
 """Settings, read from the environment.
 
 Every value is overridable with a WORDLE_-prefixed environment variable, e.g.
-WORDLE_PASSWORD. Secrets have no defaults: the app refuses to start without them
-rather than falling back to something guessable.
+WORDLE_AUTH_ISSUER. The one secret, the database password, is read from a file
+in the secrets directory, never from .env.
+
+Sign-in is off until an identity provider is configured. With it off, the game
+is fully playable anonymously; nothing else changes.
 """
 
 from __future__ import annotations
@@ -12,10 +15,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-# Where the password and signing key live, one file each. Secrets are never
+# Where secrets live, one file each. Secrets are never
 # written down twice, so the same directory serves Docker and a run from
 # source; only its location differs.
 _SECRET_LOCATIONS = (
@@ -37,26 +40,84 @@ def _secrets_dir() -> str | None:
     return next((str(c) for c in candidates if c.is_dir()), None)
 
 
+#: Every WORDLE_SCORING_* setting, by the ScoringRules field it fills.
+_SCORING_FIELDS = {
+    "max_base": "scoring_max_base",
+    "last_attempt_ratio": "scoring_last_attempt_ratio",
+    "time_bonus_cap": "scoring_time_bonus_cap",
+    "seconds_per_letter": "scoring_seconds_per_letter",
+    "difficulty_step": "scoring_difficulty_step",
+    "normal_max_score": "scoring_normal_max_score",
+    "score_precision": "scoring_precision",
+}
+
+
 class Settings(BaseSettings):
-    # Two candidate .env files so one file at the repo root serves both Docker
-    # and a local run from backend/. A backend/.env, if present, wins.
+    # backend/.env, when run from backend/. In Docker, compose hands the same
+    # file to the container as environment variables instead.
     model_config = SettingsConfigDict(
         env_prefix="WORDLE_",
-        env_file=("../.env", ".env"),
+        env_file=".env",
         env_file_encoding="utf-8",
-        # One file per secret, named after the setting: wordle_password,
-        # wordle_secret_key. Kept out of .env and out of the environment --
-        # `docker inspect` prints the environment, not a file's contents.
+        # One file per secret, named after the setting: wordle_database_password.
+        # Kept out of .env and out of the environment -- `docker inspect`
+        # prints the environment, not a file's contents.
         secrets_dir=_secrets_dir(),
         extra="ignore",
     )
 
-    # --- Secrets. No defaults on purpose.
-    password: str = Field(min_length=1, description="Shared password for API access")
-    secret_key: str = Field(min_length=16, description="Key signing the access token")
+    # --- Sign-in. Any standard OpenID Connect provider.
+    auth_provider: Literal["oidc", "auth0"] = Field(
+        default="oidc",
+        description=(
+            "oidc works with any OpenID Connect provider but cannot close "
+            "accounts there. auth0 also closes the Auth0 account when a player "
+            "deletes theirs."
+        ),
+    )
+    auth_issuer: str | None = Field(
+        default=None,
+        description=(
+            "Identity provider's issuer URL, exactly as its discovery document "
+            "states it (Auth0's ends in a slash). Unset turns sign-in off."
+        ),
+    )
+    auth_audience: str | None = Field(
+        default=None,
+        description="The identifier this API is registered under at the provider.",
+    )
+    auth_algorithms: Annotated[list[str], NoDecode] = Field(
+        default=["RS256"],
+        description="Accepted token signature algorithms. Comma-separated in the environment.",
+    )
+    auth_link_verified_emails: bool = Field(
+        default=True,
+        description=(
+            "Join a new sign-in method to an existing player when the provider "
+            "has verified they share an email."
+        ),
+    )
 
-    # --- Access token
-    token_max_age: int = Field(default=60 * 60 * 12, ge=60, description="Token lifetime, seconds")
+    # --- Auth0 only: the Machine to Machine application that closes accounts.
+    auth0_deletion_app_client_id: str | None = Field(default=None)
+    auth0_deletion_app_client_secret: str | None = Field(
+        default=None,
+        description=(
+            "A secret file (wordle_auth0_deletion_app_client_secret), "
+            "never an environment variable."
+        ),
+    )
+
+    # --- PostgreSQL: players, and everything else except games in progress.
+    # Only connected to when sign-in is on.
+    database_url: str | None = Field(
+        default=None,
+        description="PostgreSQL connection URL, without the password.",
+    )
+    database_password: str | None = Field(
+        default=None,
+        description="PostgreSQL password. A secret file, never an environment variable.",
+    )
 
     # --- CORS. The frontend is a separate origin, so it must be named here.
     # NoDecode: without it pydantic-settings JSON-decodes the value straight
@@ -68,7 +129,7 @@ class Settings(BaseSettings):
     )
 
     # --- Game
-    word_length: int | None = Field(
+    default_word_length: int | None = Field(
         default=None,
         ge=2,
         description=(
@@ -76,14 +137,25 @@ class Settings(BaseSettings):
             "falling back to the shortest list installed."
         ),
     )
-    # --- Storage
-    store: Literal["memory", "sqlite"] = Field(
+    # --- Active games: games being played, in their own SQLite file, apart
+    # from the main database.
+    active_games_store: Literal["memory", "sqlite"] = Field(
         default="sqlite",
         description="sqlite keeps games across a restart; memory loses them",
     )
-    data_dir: Path = Field(
-        default=Path("data"),
-        description="Writable directory for the game database. Mount a volume here.",
+    active_games_db_path: Path = Field(
+        default=Path("data/games.db"),
+        description="The SQLite file. Its folder is created if missing. Mount a volume there.",
+    )
+    active_games_max: int = Field(
+        default=10_000,
+        ge=1,
+        description="Most games kept at once; the least recently played go first.",
+    )
+    active_games_ttl_seconds: int = Field(
+        default=60 * 60 * 4,
+        ge=60,
+        description="A game untouched this long is dropped.",
     )
 
     word_lists_dir: Path | None = Field(
@@ -94,19 +166,75 @@ class Settings(BaseSettings):
         ),
     )
 
-    # --- Limits
-    game_ttl_seconds: int = Field(default=60 * 60 * 4, ge=60)
-    max_games: int = Field(default=10_000, ge=1)
-    login_max_failures: int = Field(default=10, ge=1)
-    login_lockout_seconds: int = Field(default=300, ge=1)
+    # --- Scoring constants, for running without PostgreSQL only. With a
+    # database they come from its active scoring version and these are ignored.
+    scoring_max_base: float | None = Field(default=None, gt=0)
+    scoring_last_attempt_ratio: float | None = Field(default=None, gt=0, le=1)
+    scoring_time_bonus_cap: float | None = Field(default=None, ge=0)
+    scoring_seconds_per_letter: float | None = Field(default=None, gt=0)
+    scoring_difficulty_step: float | None = Field(default=None, gt=0)
+    scoring_normal_max_score: float | None = Field(default=None, gt=0)
+    scoring_precision: int | None = Field(default=None, ge=0)
 
-    @field_validator("allowed_origins", mode="before")
+    @field_validator("allowed_origins", "auth_algorithms", mode="before")
     @classmethod
-    def _split_origins(cls, value: object) -> object:
-        """Accept "http://a, http://b" from the environment as well as a list."""
+    def _split_list(cls, value: object) -> object:
+        """Accept "a, b" from the environment as well as a list."""
         if isinstance(value, str):
-            return [origin.strip() for origin in value.split(",") if origin.strip()]
+            return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @property
+    def sign_in_enabled(self) -> bool:
+        return self.auth_issuer is not None
+
+    @property
+    def scoring_settings(self) -> dict[str, float | int | None]:
+        """The WORDLE_SCORING_* values, keyed by ScoringRules field."""
+        return {rule: getattr(self, name) for rule, name in _SCORING_FIELDS.items()}
+
+    @property
+    def any_scoring_setting(self) -> bool:
+        return any(value is not None for value in self.scoring_settings.values())
+
+    @model_validator(mode="after")
+    def _scoring_has_a_source(self) -> Settings:
+        """Without a database, the scoring constants must all come from settings."""
+        if self.sign_in_enabled:
+            return self
+        missing = [
+            f"WORDLE_{name.upper()}"
+            for name in _SCORING_FIELDS.values()
+            if getattr(self, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                "Without sign-in there is no database to read scoring from, so every "
+                f"scoring setting is required. Missing: {', '.join(missing)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _sign_in_is_complete(self) -> Settings:
+        """Half a sign-in configuration is a mistake; stop at startup, not at login."""
+        if not self.sign_in_enabled:
+            return self
+        if not self.auth_audience:
+            raise ValueError("WORDLE_AUTH_AUDIENCE is required when WORDLE_AUTH_ISSUER is set")
+        if not self.database_url:
+            raise ValueError("WORDLE_DATABASE_URL is required when WORDLE_AUTH_ISSUER is set")
+        if self.auth_provider == "auth0":
+            if not self.auth0_deletion_app_client_id:
+                raise ValueError(
+                    "WORDLE_AUTH0_DELETION_APP_CLIENT_ID is required when "
+                    "WORDLE_AUTH_PROVIDER is auth0"
+                )
+            if not self.auth0_deletion_app_client_secret:
+                raise ValueError(
+                    "secrets/wordle_auth0_deletion_app_client_secret is required when "
+                    "WORDLE_AUTH_PROVIDER is auth0"
+                )
+        return self
 
 
 @lru_cache

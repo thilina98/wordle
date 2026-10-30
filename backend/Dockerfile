@@ -23,7 +23,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONFAULTHANDLER=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    WORDLE_DATA_DIR=/data
+    WORDLE_ACTIVE_GAMES_DB_PATH=/data/games.db
 
 # A fixed non-root uid, so files on the mounted volume have a stable owner
 # whichever host this runs on. No home directory and no shell: this account

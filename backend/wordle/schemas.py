@@ -6,17 +6,21 @@ from dataclasses import asdict
 
 from pydantic import BaseModel, Field
 
+from .accounts import Player
 from .game import MIN_ATTEMPTS, Colour, GameState
-from .scoring import Score, score_for
+from .scoring import Score, ScoringRules, score_for
+from .stats import StatsSummary
 
 
-class LoginRequest(BaseModel):
-    password: str = Field(max_length=256)
+class PlayerView(BaseModel):
+    """A signed-in player, as they see themselves."""
 
+    player_id: str
+    display_name: str
 
-class TokenResponse(BaseModel):
-    token: str
-    expires_in: int
+    @classmethod
+    def of(cls, player: Player) -> PlayerView:
+        return cls(player_id=player.player_id, display_name=player.display_name)
 
 
 class CreateGameRequest(BaseModel):
@@ -86,10 +90,15 @@ class GameView(BaseModel):
     answer: str | None = None
     #: Null until the game is over. There is no score for a game in progress.
     score: ScoreView | None = None
+    #: Whether the game belongs to the player asking. An owned game counts in
+    #: their statistics. Always false for an anonymous player; false for a
+    #: signed-in one only when they started it signed out and guessed in it
+    #: before signing in.
+    owned: bool = False
 
     @classmethod
-    def of(cls, game_id: str, game: GameState) -> GameView:
-        score = score_for(game)
+    def of(cls, game_id: str, game: GameState, rules: ScoringRules, *, owned: bool) -> GameView:
+        score = score_for(game, rules)
         return cls(
             game_id=game_id,
             word_length=game.word_length,
@@ -101,4 +110,35 @@ class GameView(BaseModel):
             letter_states=game.letter_states,
             answer=game.target if game.is_over else None,
             score=ScoreView.of(score) if score else None,
+            owned=owned,
         )
+
+
+class StatsView(BaseModel):
+    """A player's statistics under the filter they asked for.
+
+    Null where a figure would divide by zero. Streaks are null unless both a
+    word length and a difficulty were asked for. Times are in milliseconds and
+    count wins on attempt 2 or later only; so does `average_score`, which
+    leaves out losses and attempt-1 wins because they always score zero.
+    """
+
+    games: int
+    wins: int
+    losses: int
+    win_percentage: float | None
+    first_attempt_wins: int
+    last_attempt_wins: int
+    total_score: float
+    highest_score: float | None
+    average_score: float | None
+    fastest_win_ms: int | None
+    average_win_ms: int | None
+    current_streak: int | None
+    best_streak: int | None
+    #: Wins by the attempt they were won on.
+    guess_distribution: dict[int, int]
+
+    @classmethod
+    def of(cls, summary: StatsSummary) -> StatsView:
+        return cls(**asdict(summary))

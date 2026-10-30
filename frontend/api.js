@@ -1,36 +1,24 @@
 /**
  * The only file that knows the backend exists.
  *
- * Holds the access token and puts it on every request. Everything else in the
- * frontend calls these functions and never touches fetch or the token.
+ * Everything else in the frontend calls these functions and never touches
+ * fetch. A request carries the player's access token when they are signed in,
+ * and nothing when they are not: anonymous play needs no account.
  */
 
-'use strict';
-
-const WordleApi = (() => {
-  const TOKEN_KEY = 'wordle.token';
+export const api = (() => {
   const base = (window.WORDLE_CONFIG && window.WORDLE_CONFIG.apiBase || '').replace(/\/$/, '');
 
-  /** Storage is unavailable in some private-browsing modes; degrade, do not crash. */
-  const store = {
-    read() {
-      try {
-        return window.localStorage.getItem(TOKEN_KEY);
-      } catch {
-        return null;
-      }
-    },
-    write(value) {
-      try {
-        if (value === null) window.localStorage.removeItem(TOKEN_KEY);
-        else window.localStorage.setItem(TOKEN_KEY, value);
-      } catch {
-        // Session lasts until reload. Playable, just not resumable.
-      }
-    },
-  };
+  // Left behind by the shared-password version. The server no longer issues
+  // these, and would refuse one if it were sent, so drop it.
+  try {
+    window.localStorage.removeItem('wordle.token');
+  } catch {
+    // No storage: nothing to clean up.
+  }
 
-  let token = store.read();
+  /** Returns the access token to send, or null. Set by the page at startup. */
+  let tokenFor = () => null;
 
   class ApiError extends Error {
     constructor(message, status) {
@@ -39,10 +27,11 @@ const WordleApi = (() => {
     }
   }
 
-  async function request(path, { method = 'GET', body, auth = true } = {}) {
+  async function request(path, { method = 'GET', body } = {}) {
     const headers = {};
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (auth && token) headers.Authorization = `Bearer ${token}`;
+    const token = tokenFor();
+    if (token) headers.Authorization = `Bearer ${token}`;
 
     let response;
     try {
@@ -58,10 +47,13 @@ const WordleApi = (() => {
 
     const payload = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) {
-      throw new ApiError(
+      const error = new ApiError(
         (payload && payload.detail) || `Request failed (${response.status})`,
         response.status,
       );
+      // A 401 for a request that carried a token: the sign-in is no good.
+      error.signInRejected = response.status === 401 && Boolean(token);
+      throw error;
     }
     return payload;
   }
@@ -69,34 +61,28 @@ const WordleApi = (() => {
   return {
     ApiError,
 
-    hasToken: () => Boolean(token),
-
-    async login(password) {
-      const { token: issued } = await request('/api/login', {
-        method: 'POST',
-        body: { password },
-        auth: false,
-      });
-      token = issued;
-      store.write(token);
+    /** Where to get the access token from. Called before every request. */
+    useToken(provider) {
+      tokenFor = provider;
     },
 
-    logout() {
-      token = null;
-      store.write(null);
+    /** The signed-in player. The first call after signing up creates them. */
+    readMyPlayer: () => request('/api/players/me'),
+
+    /**
+     * The signed-in player's statistics. Both filters are optional: leave
+     * them out for every game. Streaks come back only when both are given.
+     */
+    readMyStats: ({ wordLength, difficulty } = {}) => {
+      const query = new URLSearchParams();
+      if (wordLength !== undefined) query.set('word_length', wordLength);
+      if (difficulty !== undefined) query.set('difficulty', difficulty);
+      const suffix = query.toString() ? `?${query}` : '';
+      return request(`/api/players/me/stats${suffix}`);
     },
 
-    /** True if the stored token is still good. Cheap enough to call on load. */
-    async sessionIsValid() {
-      if (!token) return false;
-      try {
-        await request('/api/session');
-        return true;
-      } catch (error) {
-        if (error.status === 401) return false;
-        throw error;
-      }
-    },
+    /** Delete the signed-in player, their games and their provider account. */
+    deleteMyPlayer: () => request('/api/players/me', { method: 'DELETE' }),
 
     // Anything omitted falls back to the server's default: the ordinary
     // five-letter board with five attempts.

@@ -1,7 +1,8 @@
 # Wordle
 
 Five letters, five guesses, colour-coded feedback. Plays on a phone or with a
-physical keyboard. Protected by one shared password.
+physical keyboard. Anyone can play without an account; signing in (email and
+password, Google or GitHub) is optional and ties games to a player.
 
 One repository, two applications. They are built, run and deployed separately
 and share nothing but the HTTP contract between them.
@@ -47,11 +48,12 @@ cd backend
 ../.venv/bin/poetry install --extras dev
 
 cd ..
-cp .env.example .env                  # non-secret config; defaults suit local
+cp backend/.env.example backend/.env   # backend settings; defaults suit local
+cp frontend/.env.example frontend/.env # frontend settings (Docker only)
 
-mkdir -p secrets                      # the two secrets, one file each
-printf '%s' 'pick-a-password' > secrets/wordle_password
-python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_secret_key
+mkdir -p secrets                      # only needed for sign-in; see backend/ACCOUNTS.md
+python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > secrets/wordle_database_password
+printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
 chmod 600 secrets/wordle_*
 ```
 
@@ -69,7 +71,8 @@ cd frontend
 python3 -m http.server 8080
 ```
 
-Open **http://localhost:8080** and enter the password from `secrets/wordle_password`.
+Open **http://localhost:8080**. With no `WORDLE_AUTH_ISSUER` set, sign-in is
+off and every game is anonymous; no database is needed.
 
 The frontend needs no build step and no Node. Any static server will do;
 `http.server` is just the one that is already installed.
@@ -112,8 +115,8 @@ describe what the **browser** sees, not what the containers see.
 
 | Setting | Meaning | Set in |
 |---|---|---|
-| `WORDLE_API_BASE` | where the browser sends API calls | `.env` → `frontend/config.js` |
-| `WORDLE_ALLOWED_ORIGINS` | where the browser loaded the page from | `.env` → the API's CORS list |
+| `WORDLE_API_BASE` | where the browser sends API calls | `frontend/.env` → `frontend/config.js` |
+| `WORDLE_ALLOWED_ORIGINS` | where the browser loaded the page from | `backend/.env` → the API's CORS list |
 
 Get one wrong and the page loads but every request fails. In the browser
 console that shows up as a CORS error or "Cannot reach the server".
@@ -122,59 +125,68 @@ For local development the defaults already match: frontend on 8080, API on 8000.
 
 ## Configuration
 
-Every backend setting reads from a `WORDLE_`-prefixed environment variable, or
-from `.env` at the repo root. See [.env.example](.env.example).
+Each application has its own settings file; there is no shared one at the repo
+root. Every backend setting reads from a `WORDLE_`-prefixed environment
+variable, or from `backend/.env`. See
+[backend/.env.example](backend/.env.example) and
+[frontend/.env.example](frontend/.env.example).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `WORDLE_PASSWORD` | — | Required. Shared password. **From `secrets/`.** |
-| `WORDLE_SECRET_KEY` | — | Required, 16+ chars. Signs the token. **From `secrets/`.** |
-| `WORDLE_SECRETS_DIR` | auto | Override where the two secret files are found. |
+| `WORDLE_AUTH_ISSUER` | unset | Identity provider's issuer URL. Unset turns sign-in off. |
+| `WORDLE_AUTH_AUDIENCE` | unset | This API's identifier at the provider. Required with an issuer. |
+| `WORDLE_AUTH_ALGORITHMS` | `RS256` | Accepted token signatures. Asymmetric only. |
+| `WORDLE_AUTH_LINK_VERIFIED_EMAILS` | `true` | Join sign-in methods that share a verified email. |
+| `WORDLE_AUTH_PROVIDER` | `oidc` | `auth0` also closes the Auth0 account when a player deletes theirs. `oidc` works with any provider but leaves it open. |
+| `WORDLE_AUTH0_DELETION_APP_CLIENT_ID` | unset | `auth0` only. The Machine to Machine app allowed to delete users. |
+| `WORDLE_AUTH0_DELETION_APP_CLIENT_SECRET` | unset | `auth0` only. **From `secrets/`.** |
+| `WORDLE_DATABASE_URL` | unset | PostgreSQL URL, no password. Required when sign-in is on. |
+| `WORDLE_DATABASE_PASSWORD` | unset | **From `secrets/`.** |
+| `WORDLE_SECRETS_DIR` | auto | Override where secret files are found. |
 | `WORDLE_ALLOWED_ORIGINS` | `http://localhost:8080` | Comma-separated. |
-| `WORDLE_API_BASE` | `http://localhost:8000` | Frontend only. |
-| `WORDLE_TOKEN_MAX_AGE` | `43200` | Token lifetime, seconds. |
-| `WORDLE_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
+| `WORDLE_API_BASE` | `http://localhost:8000` | Frontend, in `frontend/.env`. |
+| `WORDLE_AUTH_ISSUER`, `WORDLE_AUTH_AUDIENCE`, `WORDLE_AUTH_LOGIN_APP_CLIENT_ID` | unset | Frontend, in `frontend/.env`: sign-in button. All three or none. See [backend/ACCOUNTS.md](backend/ACCOUNTS.md). |
+| `WORDLE_DEFAULT_WORD_LENGTH` | `5` | Length used when a game does not ask for one. Must be installed. |
 | `WORDLE_WORD_LISTS_DIR` | shipped lists | Directory of word lists, one subdirectory per length. |
-| `WORDLE_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
-| `WORDLE_DATA_DIR` | `data` | Where the game database lives. Mount a volume here. |
-| `WORDLE_GAME_TTL_SECONDS` | `14400` | Abandoned games are dropped after this. |
-| `WORDLE_MAX_GAMES` | `10000` | Cap on games held in memory. |
-| `WORDLE_LOGIN_MAX_FAILURES` | `10` | Failures before a lockout. |
-| `WORDLE_LOGIN_LOCKOUT_SECONDS` | `300` | How long the lockout lasts. |
+| `WORDLE_ACTIVE_GAMES_STORE` | `sqlite` | `sqlite` keeps games across a restart; `memory` loses them. |
+| `WORDLE_ACTIVE_GAMES_DB_PATH` | `data/games.db` | The SQLite file for games being played. Mount a volume on its folder. |
+| `WORDLE_ACTIVE_GAMES_TTL_SECONDS` | `14400` | A game untouched this long is dropped. |
+| `WORDLE_ACTIVE_GAMES_MAX` | `10000` | Most games kept at once; the least recently played go first. |
+| `WORDLE_SCORING_*` | unset | Scoring constants, only when sign-in is off (no database). All seven required then; ignored with a database. See [Scoring](#scoring). |
 
-The API refuses to start without a password and a secret key. There is no
-fallback for either, because a default secret is not a secret.
+The API needs no secrets to start. Half a sign-in configuration (an issuer
+without an audience, or no database URL) stops it at startup rather than at
+the first sign-in. So does sign-in off with a `WORDLE_SCORING_*` value missing,
+or sign-in on with no active scoring version in the database.
 
-**Secrets live in `secrets/`, never in `.env`** — one file per secret, the
-same directory in every environment (`/run/secrets` in Docker, `secrets/` from
-source). Compose reads `.env`, so a secret placed there becomes a container
-environment variable and `docker inspect` prints it.
+**Secrets live in `secrets/`, never in a `.env` file** — one file per secret,
+the same directory in every environment (`/run/secrets` in Docker, `secrets/`
+from source). Compose hands each `.env` file to its container as environment
+variables, so a secret placed there would show up in `docker inspect`.
 
-`.env` holds the per-machine, non-secret settings: which URLs the browser uses,
-and the timeouts. It is gitignored, so your laptop's copy and the VPS copy
-differ. See [secrets/README.md](secrets/README.md) and
-[.env.example](.env.example).
+`backend/.env` and `frontend/.env` hold the per-machine, non-secret settings:
+which URLs the browser uses, sign-in, and the timeouts. Both are gitignored, so
+your laptop's copies and the VPS copies differ. See
+[secrets/README.md](secrets/README.md).
 
 ## API
 
-JSON everywhere. Every route except `/healthz` and `/api/login` needs
-`Authorization: Bearer <token>`.
+JSON everywhere. No route needs a token. Send `Authorization: Bearer <token>`
+(an access token from the identity provider) to play as a signed-in player.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/healthz` | Liveness. Public. |
-| `POST` | `/api/login` | Password in, token out. Public. |
-| `GET` | `/api/session` | Is my stored token still good? |
+| `GET` | `/healthz` | Liveness. |
+| `GET` | `/api/players/me` | The signed-in player. The first call registers them. Token required. |
+| `DELETE` | `/api/players/me` | Delete the signed-in player, their games and (with `auth0`) their Auth0 account. Token required. |
 | `POST` | `/api/games` | Start a game. |
 | `GET` | `/api/games/{id}` | Current board, for resuming a reload. |
 | `POST` | `/api/games/{id}/start` | Start the clock, on the first keystroke. |
 | `POST` | `/api/games/{id}/guesses` | Score a guess. |
 
 ```bash
-TOKEN=$(curl -s localhost:8000/api/login \
-  -H 'Content-Type: application/json' -d '{"password":"'"$WORDLE_PASSWORD"'"}' | jq -r .token)
-
-curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN"
+curl -s -X POST localhost:8000/api/games                                   # anonymous
+curl -s -X POST localhost:8000/api/games -H "Authorization: Bearer $TOKEN" # as a player
 ```
 
 A board looks like this. `answer` and `score` stay `null` until the game ends:
@@ -197,27 +209,54 @@ A board looks like this. `answer` and `score` stay `null` until the game ends:
 Guess errors are specific, so the page can say something useful: `400` with
 `"Enter a valid word"`, `"Guess must be 5 letters"` or `"Guess must contain
 letters only"`. A rejected guess costs no attempt. `409` means the game is over,
-`404` that it expired or never existed, `401` that the token is missing, forged
-or stale.
+`404` that it expired, never existed or belongs to another player, `401` that
+a token was sent and is forged, expired or malformed (a bad token is never
+treated as anonymous), `503` that the identity provider or database is down.
 
 ## How access works
 
-There are no accounts. `POST /api/login` checks the shared password with
-`hmac.compare_digest` and returns a token signed with `WORDLE_SECRET_KEY` and
-stamped with the time. Every later request carries it in an `Authorization`
-header; the API verifies the signature and the age.
+Anyone can play without an account. Signing in is optional and happens at an
+identity provider (Auth0 today), never in this API: the frontend sends the
+player there, gets back an access token, and sends it with each request. The
+API checks the token's signature against the provider's published keys and
+turns it into a player of our own, kept in PostgreSQL.
 
-A token, not a cookie, because the two halves are separate origins. Cookies
-across origins need `SameSite=None; Secure`, which needs HTTPS — awkward when
-the deployment target is a bare IP address over plain HTTP.
+A game started while signed in belongs to that player; anyone else gets a 404.
+A game started anonymously is open to whoever holds its unguessable id, as
+every game was before accounts.
 
-The token is stored in `localStorage`, so it survives a reload. It is readable
-by anything running on the page, which is the same thing that is true of the
-password box itself. There is no user data behind it.
+No provider and no database is named outside `backend/wordle/accounts/`.
+Switching to another OpenID Connect provider (Authentik, Keycloak...) is a
+configuration change; replacing PostgreSQL needs a new storage class. See
+[backend/ACCOUNTS.md](backend/ACCOUNTS.md) for the design, provider setup and
+the database schema.
 
-Because the frontend is served separately, its HTML and JS are public. They
-contain no answers and no password, and every route that matters is gated. What
-the password protects is playing, not downloading an empty board.
+### Sign-in on or off
+
+Two settings in `backend/.env` decide whether players can sign in:
+
+| `WORDLE_AUTH_ISSUER` and `WORDLE_AUTH_AUDIENCE` | Result |
+|---|---|
+| Both set | **Sign-in on.** Players can sign in through the provider, and their games belong to their account. Anonymous play still works. Needs PostgreSQL. |
+| Neither set | **Sign-in off.** Anonymous play only, exactly as before accounts existed. The API never contacts the provider or PostgreSQL, and answers any token with "Sign-in is not enabled on this server". Useful before the provider is set up. |
+| Only one set, or set to an empty value | The API refuses to start. |
+
+To check which mode a running server is in, send it a fake token shaped like a
+real one:
+
+```bash
+curl -i -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIsImtpZCI6InByb2JlIn0.e30.x" \
+  localhost:8000/api/players/me
+```
+
+| Reply | Meaning |
+|---|---|
+| `401` "Unknown signing key" | Sign-in is on and working: the API reached the provider, fetched its keys and rejected the fake token. |
+| `503` "Sign-in is unavailable" | Sign-in is on but the provider cannot be reached, or `WORDLE_AUTH_ISSUER` does not match it exactly (check the trailing `/`). |
+| `401` "Sign-in is not enabled on this server" | Sign-in is off. |
+
+A request with no token at all gets "Sign in to do this" in both modes, so it
+cannot tell them apart.
 
 ## Word lists
 
@@ -252,7 +291,7 @@ POST /api/games   {"word_length": 6}
 Only the shipped five-letter lists are installed, so that is the only length
 available out of the box. A request for a length with no lists is a 400 naming
 the lengths that do exist, and an omitted `word_length` uses
-`WORDLE_WORD_LENGTH`.
+`WORDLE_DEFAULT_WORD_LENGTH`.
 
 ## Scoring
 
@@ -303,8 +342,73 @@ claim a four-second game. A game that never calls it is timed from its first
 guess; a game that never reaches the server at all is scored as if it used its
 whole window, because withholding the clock must not pay.
 
-Every constant lives in `backend/wordle/scoring.py` and nowhere else. They are
-not settings: a score has to mean the same thing in every deployment.
+The formula lives in `backend/wordle/scoring.py`; its constants do not.
+
+| Sign-in | Constants come from |
+|---|---|
+| On (PostgreSQL) | The active row in `scoring_versions`. Cached in memory, refreshed every 4 hours and whenever a recorded game sees a newer version. |
+| Off (no database) | The seven `WORDLE_SCORING_*` settings. Placeholders with version 1's values are in `backend/.env.example`. |
+
+Every recorded game keeps the scoring version it was played under, so a rule
+change never loses the original score.
+
+## Statistics
+
+A signed-in player's finished games are kept in PostgreSQL, one row each, and
+added up per player, word length and difficulty. Anonymous games are never
+recorded.
+
+A game started signed out becomes the player's if they sign in before its
+first guess, and then counts. After a guess it stays anonymous, so nobody can
+sign in only for the games that are going well; the board says so
+(`owned: false`) and the page shows a note.
+
+```
+GET /api/players/me/stats                                   every game
+GET /api/players/me/stats?word_length=5                     one mode, every difficulty
+GET /api/players/me/stats?difficulty=hard                   one difficulty, every mode
+GET /api/players/me/stats?word_length=5&difficulty=hard     one combination
+```
+
+**Mode** is the word length. **Difficulty** is the attempt allowance against
+it: `easy` (more attempts than letters), `normal` (one per letter), `hard`
+(fewer). Each game keeps the label it was played under.
+
+| Figure | Means |
+|---|---|
+| `games`, `wins`, `losses`, `win_percentage` | `losses` includes abandoned games. |
+| `first_attempt_wins`, `last_attempt_wins` | Won on attempt 1; won on the last attempt allowed. |
+| `total_score`, `highest_score` | Under the active scoring version. |
+| `average_score` | Over **scored games only**: wins on attempt 2 or later. Losses and attempt-1 wins score 0 and are left out. |
+| `fastest_win_ms`, `average_win_ms` | Wins on attempt 2 or later only. |
+| `current_streak`, `best_streak` | Wins in a row. Only when both `word_length` and `difficulty` are given; null otherwise. A loss elsewhere does not break it. |
+| `guess_distribution` | Wins by the attempt they were won on. |
+
+Figures that would divide by zero are null.
+
+**What counts.** A win or a loss counts. A game left after two or more guesses
+counts as a loss (`abandoned`); after one guess it is ignored. A game is left
+when the player starts another in the same mode and difficulty, or when it
+expires.
+
+**Nothing is lost to an outage.** A finished game waits in the SQLite store
+until PostgreSQL has it. The server retries every minute, in the order the
+games ended, and the player gets their board either way.
+
+### Data scripts
+
+Migrations change the schema and run on their own at startup. Changes to
+data are data scripts in `backend/wordle/db/data_scripts/`, run by hand, once
+each:
+
+```bash
+python -m wordle.db data-scripts                                     # list, with what has run
+python -m wordle.db run-data-script 0001_seed_scoring_version_1     # run one
+```
+
+`0001_seed_scoring_version_1` must run once before the server first starts
+with sign-in on; until then it refuses to start. In Docker, see
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Game shape
 
@@ -318,7 +422,7 @@ POST /api/games   {}
 
 | Field | Default | Bound by |
 |---|---|---|
-| `word_length` | `WORDLE_WORD_LENGTH` | The word lists installed. |
+| `word_length` | `WORDLE_DEFAULT_WORD_LENGTH` | The word lists installed. |
 | `max_attempts` | One guess per letter | 2 to the length plus two. |
 
 **Attempts follow the word.** A five-letter game gets five guesses and allows
@@ -355,20 +459,18 @@ Swapping in a database means reimplementing `WordRepository` and nothing else.
 
 ## Storage
 
-Games are the only state the app has. By default they go in SQLite under
-`WORDLE_DATA_DIR`, so destroying and rebuilding the container does not end
-anyone's game. In Docker that directory is a named volume, `wordle-data`, which
+Games being played go in their own SQLite file, `WORDLE_ACTIVE_GAMES_DB_PATH`,
+apart from the main PostgreSQL database, so destroying and rebuilding the
+container does not end anyone's game. In Docker that directory is a named volume, `wordle-data`, which
 outlives `docker compose down` and only goes away with `docker volume rm`.
 
-`WORDLE_STORE=memory` switches to the in-process store, which is faster and
+`WORDLE_ACTIVE_GAMES_STORE=memory` switches to the in-process store, which is faster and
 loses everything on restart. Both implement the same `GameStore` protocol and
 run against the same contract tests.
 
 ## Known limits
 
-- **Run exactly one worker.** SQLite takes one writer, and the login throttle
-  is per process. Scaling out means Redis or Postgres behind the `GameStore`
-  protocol.
-- **The login throttle is per process** — a speed bump, not a real rate limit.
-  Put one at the reverse proxy for an internet-facing deployment.
-- **One shared password**, no accounts. Everyone who has it sees the same game.
+- **Run exactly one worker.** SQLite takes one writer. Scaling out means
+  Postgres behind the `GameStore` protocol, as players already are.
+- **No rate limit.** Game routes are open to anonymous players, so put a rate
+  limit at the reverse proxy for an internet-facing deployment.

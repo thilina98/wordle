@@ -1,16 +1,24 @@
 """Scoring. The table from the spec, then the properties it has to keep."""
 
+from functools import partial
+
 import pytest
 
-from tests.conftest import ANSWERS, EXTRA_GUESSES
+from tests.conftest import ANSWERS, EXTRA_GUESSES, RULES
 from wordle.game import GameState, InvalidGuessError
-from wordle.scoring import (
-    DIFFICULTY_STEP,
-    NORMAL_MAX_SCORE,
-    SECONDS_PER_LETTER,
-    score_for,
-    score_game,
-)
+from wordle.scoring import score_for as _score_for
+from wordle.scoring import score_game as _score_game
+
+DIFFICULTY_STEP = RULES.difficulty_step
+NORMAL_MAX_SCORE = RULES.normal_max_score
+SECONDS_PER_LETTER = RULES.seconds_per_letter
+
+# Version 1's constants throughout: the spec table below was written for them.
+score_game = partial(_score_game, RULES)
+
+
+def score_for(game: GameState):
+    return _score_for(game, RULES)
 
 
 def play(

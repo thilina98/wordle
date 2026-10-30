@@ -1,9 +1,11 @@
-"""End-to-end tests over the HTTP surface: the gate, then the game."""
+"""End-to-end tests over the HTTP surface: accounts, then the game."""
 
-import time
+import pytest
+from fastapi.testclient import TestClient
 
-from tests.conftest import ANSWERS, EXTRA_GUESSES, ORIGIN, PASSWORD, write_length
-from wordle.security import issue_token
+from tests.conftest import ANSWERS, EXTRA_GUESSES, ORIGIN, write_length
+from wordle.accounts import SignInDisabled
+from wordle.app import create_app
 
 
 def new_game(client) -> dict:
@@ -19,100 +21,215 @@ def guess(client, game_id: str, word: str):
 class TestServesJsonOnly:
     """The frontend is a separate application. This one hands out no pages."""
 
-    def test_serves_no_html_pages(self, anon):
+    def test_serves_no_html_pages(self, client):
         for path in ("/", "/login", "/index.html"):
-            assert anon.get(path).status_code == 404
+            assert client.get(path).status_code == 404
 
-    def test_serves_no_static_assets(self, anon):
+    def test_serves_no_static_assets(self, client):
         for path in ("/static/app.js", "/static/style.css", "/app.js"):
-            assert anon.get(path).status_code == 404
+            assert client.get(path).status_code == 404
 
-    def test_health_check_is_public(self, anon):
-        assert anon.get("/healthz").json() == {"status": "ok"}
+    def test_health_check_is_public(self, client):
+        assert client.get("/healthz").json() == {"status": "ok"}
 
-    def test_api_docs_are_not_exposed(self, anon):
+    def test_api_docs_are_not_exposed(self, client):
         for path in ("/docs", "/redoc", "/openapi.json"):
-            assert anon.get(path).status_code == 404
+            assert client.get(path).status_code == 404
 
 
-class TestLogin:
-    def test_correct_password_returns_a_token(self, anon):
-        response = anon.post("/api/login", json={"password": PASSWORD})
-        assert response.status_code == 200
-        body = response.json()
-        assert body["token"]
-        assert body["expires_in"] > 0
+class TestAnonymousPlay:
+    """No account needed: the game plays exactly as it did before accounts."""
 
-    def test_wrong_password_is_rejected(self, anon):
-        response = anon.post("/api/login", json={"password": "guess"})
+    def test_a_game_can_be_played_without_signing_in(self, client, answer):
+        answer("crane")
+        game = new_game(client)
+        assert guess(client, game["game_id"], "crane").json()["is_won"] is True
+
+    def test_there_is_no_shared_password_any_more(self, client):
+        assert client.post("/api/login", json={"password": "x"}).status_code == 404
+
+    def test_an_anonymous_game_is_open_to_anyone_holding_its_id(self, client, sign_in):
+        # As before accounts: the unguessable id is the only key.
+        game_id = new_game(client)["game_id"]
+        assert sign_in("someone").get(f"/api/games/{game_id}").status_code == 200
+
+    def test_a_signed_in_player_can_finish_a_game_started_anonymously(
+        self, client, sign_in, answer
+    ):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        player = sign_in("someone")
+        assert guess(player, game_id, "crane").json()["is_won"] is True
+
+
+class TestSignIn:
+    def test_me_needs_a_token(self, client):
+        response = client.get("/api/players/me")
         assert response.status_code == 401
-        assert response.json()["detail"] == "Wrong password"
+        assert response.headers["WWW-Authenticate"] == "Bearer"
 
-    def test_empty_password_is_rejected(self, anon):
-        assert anon.post("/api/login", json={"password": ""}).status_code == 401
+    def test_first_sign_in_creates_the_player(self, sign_in, players):
+        response = sign_in("google|1", email="ada@example.com", verified=True, name="Ada").get(
+            "/api/players/me"
+        )
+        assert response.status_code == 200
+        assert response.json()["display_name"] == "Ada"
+        assert len(players) == 1
 
-    def test_login_needs_a_password_field(self, anon):
-        assert anon.post("/api/login", json={}).status_code == 422
+    def test_signing_in_again_is_the_same_player(self, sign_in, players):
+        first = sign_in("google|1").get("/api/players/me").json()
+        again = sign_in("google|1").get("/api/players/me").json()
+        assert first == again
+        assert len(players) == 1
 
-    def test_never_echoes_the_password_back(self, anon):
-        assert PASSWORD not in anon.post("/api/login", json={"password": PASSWORD}).text
+    def test_a_known_player_costs_no_call_to_the_provider(self, sign_in, provider):
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        player.get("/api/players/me")
+        player.post("/api/games")
+        assert provider.profile_calls == 1
 
-    def test_repeated_failures_are_throttled(self, settings, make_client):
-        settings.login_max_failures = 3
-        client = make_client(settings, login=False)
-        for _ in range(3):
-            client.post("/api/login", json={"password": "wrong"})
-        response = client.post("/api/login", json={"password": "wrong"})
-        assert response.status_code == 429
-        assert "Retry-After" in response.headers
+    def test_a_bad_token_is_refused_not_treated_as_anonymous(self, client):
+        client.headers["Authorization"] = "Bearer not-a-real-token"
+        response = client.post("/api/games")
+        assert response.status_code == 401
+        assert response.headers["WWW-Authenticate"] == "Bearer"
 
-    def test_throttle_blocks_even_the_right_password(self, settings, make_client):
-        # Otherwise the lockout would be trivially bypassed by a lucky guess.
-        settings.login_max_failures = 2
-        client = make_client(settings, login=False)
-        for _ in range(2):
-            client.post("/api/login", json={"password": "wrong"})
-        assert client.post("/api/login", json={"password": PASSWORD}).status_code == 429
+    @pytest.mark.parametrize("header", ["token", "Basic abc", "Bearer", "Bearer "])
+    def test_a_malformed_authorization_header_is_refused(self, client, header):
+        client.headers["Authorization"] = header
+        assert client.post("/api/games").status_code == 401
 
+    def test_a_provider_outage_is_a_503_not_a_401(self, sign_in, provider):
+        player = sign_in("google|1")
+        provider.down = True
+        assert player.get("/api/players/me").status_code == 503
 
-class TestTokenGate:
-    def test_game_routes_reject_a_missing_token(self, anon):
-        assert anon.post("/api/games").status_code == 401
-        assert anon.get("/api/games/whatever").status_code == 401
-        assert anon.get("/api/session").status_code == 401
-
-    def test_rejects_a_forged_token(self, anon):
-        anon.headers["Authorization"] = "Bearer not-a-real-token"
-        assert anon.post("/api/games").status_code == 401
-
-    def test_rejects_a_token_signed_with_another_key(self, anon):
-        anon.headers["Authorization"] = f"Bearer {issue_token('a-different-secret-key')}"
-        assert anon.post("/api/games").status_code == 401
-
-    def test_rejects_a_malformed_authorization_header(self, anon, client):
-        token = client.headers["Authorization"].removeprefix("Bearer ")
-        for header in (token, f"Basic {token}", "Bearer", "Bearer "):
-            anon.headers["Authorization"] = header
-            assert anon.post("/api/games").status_code == 401
-
-    def test_rejects_an_expired_token(self, settings, make_client):
-        settings.token_max_age = 60
-        client = make_client(settings)
+    def test_a_provider_outage_does_not_stop_anonymous_play(self, client, provider):
+        provider.down = True
         assert client.post("/api/games").status_code == 201
 
-        # itsdangerous stamps wall-clock time into the token.
-        real_time = time.time
+    def test_with_sign_in_off_tokens_are_refused_and_play_still_works(self, settings):
+        app = create_app(settings, accounts=SignInDisabled())
         try:
-            time.time = lambda: real_time() + 61
-            assert client.post("/api/games").status_code == 401
+            client = TestClient(app)
+            assert client.post("/api/games").status_code == 201
+            client.headers["Authorization"] = "Bearer anything"
+            response = client.get("/api/players/me")
+            assert response.status_code == 401
+            assert "not enabled" in response.json()["detail"]
         finally:
-            time.time = real_time
+            app.state.store.close()
 
-    def test_answers_with_a_bearer_challenge(self, anon):
-        assert anon.post("/api/games").headers.get("WWW-Authenticate") == "Bearer"
 
-    def test_session_check_accepts_a_valid_token(self, client):
-        assert client.get("/api/session").json() == {"valid": True}
+class TestDeletePlayer:
+    def test_deleting_needs_a_token(self, client):
+        assert client.delete("/api/players/me").status_code == 401
+
+    def test_deletes_the_player_and_their_games(self, sign_in, players, app):
+        player = sign_in("google|1")
+        me = player.get("/api/players/me").json()["player_id"]
+        game_id = new_game(player)["game_id"]
+
+        assert player.delete("/api/players/me").status_code == 204
+        assert len(players) == 0
+        assert app.state.store.get(game_id, viewer=me) is None
+
+    def test_other_players_and_anonymous_games_are_untouched(self, sign_in, client, players):
+        keep = sign_in("github|2")
+        their_game = new_game(keep)["game_id"]
+        anonymous_game = new_game(client)["game_id"]
+
+        sign_in("google|1").delete("/api/players/me")
+        assert len(players) == 1
+        assert keep.get(f"/api/games/{their_game}").status_code == 200
+        assert client.get(f"/api/games/{anonymous_game}").status_code == 200
+
+    def test_the_old_token_is_refused_afterwards(self, sign_in):
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        player.delete("/api/players/me")
+
+        response = player.get("/api/players/me")
+        assert response.status_code == 401
+        assert "deleted" in response.json()["detail"]
+
+    def test_signing_in_again_is_a_new_empty_player(self, sign_in):
+        player = sign_in("google|1")
+        before = player.get("/api/players/me").json()["player_id"]
+        game_id = new_game(player)["game_id"]
+        player.delete("/api/players/me")
+
+        again = sign_in("google|1")
+        assert again.get("/api/players/me").json()["player_id"] != before
+        assert again.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_the_provider_account_is_closed(self, sign_in, provider):
+        sign_in("google|1").delete("/api/players/me")
+        assert [i.subject for i in provider.deleted] == ["google|1"]
+
+    def test_a_provider_outage_deletes_nothing(self, sign_in, provider):
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        game_id = new_game(player)["game_id"]
+        provider.delete_fails = True
+        assert player.delete("/api/players/me").status_code == 503
+        assert player.get(f"/api/games/{game_id}").status_code == 200
+
+    def test_a_database_outage_deletes_nothing(self, sign_in, players, app, monkeypatch):
+        from wordle.accounts import AccountsUnavailable
+
+        player = sign_in("google|1")
+        player.get("/api/players/me")
+        game_id = new_game(player)["game_id"]
+
+        def down(*args, **kwargs):
+            raise AccountsUnavailable("down")
+
+        monkeypatch.setattr(players, "delete", down)
+        assert player.delete("/api/players/me").status_code == 503
+        assert player.get(f"/api/games/{game_id}").status_code == 200
+
+    def test_browsers_may_send_delete(self, client):
+        response = client.options(
+            "/api/players/me",
+            headers={"Origin": ORIGIN, "Access-Control-Request-Method": "DELETE"},
+        )
+        assert response.status_code == 200
+        assert "DELETE" in response.headers["access-control-allow-methods"]
+
+
+class TestGameOwnership:
+    def test_a_signed_in_players_game_is_theirs(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        game_id = new_game(player)["game_id"]
+        assert player.get(f"/api/games/{game_id}").status_code == 200
+        assert guess(player, game_id, "crane").status_code == 200
+
+    def test_another_player_cannot_see_it(self, sign_in):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        other = sign_in("github|2")
+        assert other.get(f"/api/games/{game_id}").status_code == 404
+        assert other.post(f"/api/games/{game_id}/start").status_code == 404
+        assert guess(other, game_id, "crane").status_code == 404
+
+    def test_an_anonymous_player_cannot_see_it(self, sign_in, client):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        assert client.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_someone_elses_game_looks_like_no_game(self, sign_in):
+        game_id = new_game(sign_in("google|1"))["game_id"]
+        other = sign_in("github|2")
+        assert (
+            other.get(f"/api/games/{game_id}").json() == other.get("/api/games/no-such-game").json()
+        )
+
+    def test_the_same_person_on_another_sign_in_method_keeps_their_games(self, sign_in):
+        google = sign_in("google|1", email="ada@example.com", verified=True)
+        game_id = new_game(google)["game_id"]
+        github = sign_in("github|2", email="ADA@example.com", verified=True)
+        assert github.get(f"/api/games/{game_id}").status_code == 200
 
 
 class TestCors:
@@ -124,8 +241,8 @@ class TestCors:
         response = client.post("/api/games", headers={"Origin": "http://evil.example"})
         assert "access-control-allow-origin" not in response.headers
 
-    def test_preflight_permits_the_authorization_header(self, anon):
-        response = anon.options(
+    def test_preflight_permits_the_authorization_header(self, client):
+        response = client.options(
             "/api/games",
             headers={
                 "Origin": ORIGIN,
@@ -437,7 +554,149 @@ class TestScoring:
     def test_starting_an_unknown_game_is_a_404(self, client):
         assert client.post("/api/games/nope/start").status_code == 404
 
-    def test_starting_a_game_needs_a_token(self, anon, client, answer):
+
+class TestStatistics:
+    """A signed-in player's finished games become statistics; anonymous ones never do."""
+
+    LOSING = ("state", "tasty", "abbey", "geese", "recan")
+
+    def _play(self, client, *words: str) -> dict:
+        game_id = new_game(client)["game_id"]
+        response = None
+        for word in words:
+            response = guess(client, game_id, word)
+            assert response.status_code == 200
+        return response.json() if response else {"game_id": game_id}
+
+    def _stats(self, client, **params) -> dict:
+        response = client.get("/api/players/me/stats", params=params)
+        assert response.status_code == 200
+        return response.json()
+
+    def test_statistics_need_a_signed_in_player(self, client):
+        assert client.get("/api/players/me/stats").status_code == 401
+
+    def test_a_new_player_has_empty_statistics(self, sign_in):
+        stats = self._stats(sign_in("google|1"))
+        assert stats["games"] == 0
+        assert stats["win_percentage"] is None
+        assert stats["current_streak"] is None
+
+    def test_a_finished_game_is_counted_with_the_score_the_player_saw(self, sign_in, answer):
         answer("crane")
-        game = new_game(client)
-        assert anon.post(f"/api/games/{game['game_id']}/start").status_code == 401
+        player = sign_in("google|1")
+        board = self._play(player, "state", "crane")
+        stats = self._stats(player, word_length=5, difficulty="normal")
+        assert (stats["games"], stats["wins"], stats["current_streak"]) == (1, 1, 1)
+        assert stats["highest_score"] == board["score"]["score"]
+        assert stats["guess_distribution"] == {"2": 1}
+
+    def test_a_loss_is_counted(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, *self.LOSING)
+        assert self._stats(player)["losses"] == 1
+
+    def test_anonymous_games_are_never_counted(self, client, sign_in, answer):
+        answer("crane")
+        self._play(client, "crane")
+        assert self._stats(sign_in("google|1"))["games"] == 0
+
+    def test_a_game_tells_whether_it_is_yours(self, client, sign_in):
+        assert new_game(client)["owned"] is False
+        assert new_game(sign_in("google|1"))["owned"] is True
+
+    def test_signing_in_before_the_first_guess_makes_the_game_count(self, client, sign_in, answer):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        player = sign_in("google|1")
+        assert player.get(f"/api/games/{game_id}").json()["owned"] is True
+        guess(player, game_id, "state")
+        guess(player, game_id, "crane")
+        assert self._stats(player)["wins"] == 1
+        # It is theirs now: no longer open to anyone holding the id.
+        assert client.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_signing_in_after_a_guess_does_not(self, client, sign_in, answer):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        guess(client, game_id, "state")
+        player = sign_in("google|1")
+        assert player.get(f"/api/games/{game_id}").json()["owned"] is False
+        assert guess(player, game_id, "crane").json()["owned"] is False
+        assert self._stats(player)["games"] == 0
+
+    def test_taking_over_a_game_abandons_the_open_one(self, client, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state", "tasty")  # open, two guesses
+        anonymous = new_game(client)["game_id"]
+        player.get(f"/api/games/{anonymous}")
+        assert self._stats(player)["losses"] == 1
+
+    def test_a_new_game_in_the_same_combination_abandons_the_open_one(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state", "tasty")
+        new_game(player)
+        stats = self._stats(player, word_length=5, difficulty="normal")
+        assert (stats["games"], stats["losses"], stats["current_streak"]) == (1, 1, 0)
+
+    def test_leaving_after_one_guess_is_not_counted(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state")
+        new_game(player)
+        assert self._stats(player)["games"] == 0
+
+    def test_a_new_game_at_another_difficulty_leaves_the_open_one(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        open_game = self._play(player, "state", "tasty")
+        assert player.post("/api/games", json={"max_attempts": 4}).status_code == 201
+        assert self._stats(player)["games"] == 0
+        assert player.get(f"/api/games/{open_game['game_id']}").status_code == 200
+
+    def test_filters_are_checked(self, sign_in):
+        player = sign_in("google|1")
+        assert (
+            player.get("/api/players/me/stats", params={"difficulty": "brutal"}).status_code == 422
+        )
+        assert player.get("/api/players/me/stats", params={"word_length": 1}).status_code == 422
+
+    def test_streaks_only_for_one_combination(self, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "crane")
+        assert self._stats(player, word_length=5)["current_streak"] is None
+        assert self._stats(player, difficulty="normal")["best_streak"] is None
+        assert self._stats(player, word_length=5, difficulty="normal")["best_streak"] == 1
+
+    def test_an_outage_delays_a_result_and_never_loses_it(
+        self, sign_in, answer, app, stats, monkeypatch
+    ):
+        from wordle.stats import StatsUnavailable
+
+        def down(result):
+            raise StatsUnavailable("down")
+
+        answer("crane")
+        player = sign_in("google|1")
+        with monkeypatch.context() as patched:
+            patched.setattr(stats, "record", down)
+            board = self._play(player, "state", "crane")
+            assert board["is_won"] and board["score"]["score"] > 0
+            assert len(app.state.store.pending_results()) == 1
+
+        assert app.state.recorder.flush() == 1
+        assert self._stats(player)["wins"] == 1
+        assert app.state.store.pending_results() == []
+
+    def test_a_statistics_outage_is_a_503(self, sign_in, stats, monkeypatch):
+        from wordle.stats import StatsUnavailable
+
+        def down(*args, **kwargs):
+            raise StatsUnavailable("down")
+
+        monkeypatch.setattr(stats, "summary", down)
+        assert sign_in("google|1").get("/api/players/me/stats").status_code == 503

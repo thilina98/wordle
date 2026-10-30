@@ -104,3 +104,12 @@ refused. One list cannot do both jobs.
 
 Word lists stay CSV; the `WordRepository` seam is where a DB goes. Game store is
 in-memory; the `GameStore` protocol is where Redis goes.
+
+## Later: player accounts
+
+The shared password, its throttle and its signing key were replaced by
+optional sign-in through an OpenID Connect identity provider, with players
+stored in PostgreSQL. Anonymous play is unchanged. The sections above that
+describe the password are history; [backend/ACCOUNTS.md](backend/ACCOUNTS.md)
+is the current design.
+

@@ -29,3 +29,6 @@ backend/data/
 # Docker secrets — contents are never committed
 secrets/*
 !secrets/README.md
+
+# claude
+.claude/
