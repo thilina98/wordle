@@ -75,6 +75,7 @@ export function createAccount({ page }) {
 
   /** The signed-in player as the API knows them, or null. */
   let player = null;
+  let signInKnown = null;
 
   const menuOpen = () => !menu.hidden;
   const confirmOpen = () => !confirm.hidden;
@@ -184,18 +185,22 @@ export function createAccount({ page }) {
   });
 
   return {
-    async start() {
-      let message = null;
-      try {
-        message = await auth.init();   // also finishes a sign-in in progress
-      } catch (error) {
-        console.error(error);
-        message = 'Sign-in is unavailable right now. You can keep playing.';
-      }
-      paint();
-      if (message) toast(message, 'error');
-      await loadPlayer();
+    start() {
+      signInKnown = (async () => {
+        let message = null;
+        try {
+          message = await auth.init();   // also finishes a sign-in in progress
+        } catch (error) {
+          console.error(error);
+          message = 'Sign-in is unavailable right now. You can keep playing.';
+        }
+        paint();
+        if (message) toast(message, 'error');
+      })();
+      return signInKnown.then(loadPlayer);
     },
+    /** Resolves once start() knows who is signed in, without waiting for the player to load. */
+    signInKnown: () => signInKnown,
     isOpen: () => menuOpen() || confirmOpen(),
     isSignedIn: () => auth.isSignedIn(),
     signInLost,
