@@ -52,6 +52,7 @@ const CONFIRM_DELETE = `
  * Nothing is known about the player until `start()` resolves. Returns:
  *   start()             sign in from storage (or the provider's return), load the player
  *   isOpen()            the menu or the confirmation has the keyboard
+ *   isSignedIn()        a player is signed in
  *   signInLost(reason)  the API refused the sign-in: forget it, carry on signed out
  */
 export function createAccount({ page }) {
@@ -196,6 +197,7 @@ export function createAccount({ page }) {
       await loadPlayer();
     },
     isOpen: () => menuOpen() || confirmOpen(),
+    isSignedIn: () => auth.isSignedIn(),
     signInLost,
   };
 }

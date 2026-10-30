@@ -597,10 +597,42 @@ class TestStatistics:
         self._play(player, *self.LOSING)
         assert self._stats(player)["losses"] == 1
 
-    def test_anonymous_games_are_never_counted_or_claimed(self, client, sign_in, answer):
+    def test_anonymous_games_are_never_counted(self, client, sign_in, answer):
         answer("crane")
         self._play(client, "crane")
         assert self._stats(sign_in("google|1"))["games"] == 0
+
+    def test_a_game_tells_whether_it_is_yours(self, client, sign_in):
+        assert new_game(client)["owned"] is False
+        assert new_game(sign_in("google|1"))["owned"] is True
+
+    def test_signing_in_before_the_first_guess_makes_the_game_count(self, client, sign_in, answer):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        player = sign_in("google|1")
+        assert player.get(f"/api/games/{game_id}").json()["owned"] is True
+        guess(player, game_id, "state")
+        guess(player, game_id, "crane")
+        assert self._stats(player)["wins"] == 1
+        # It is theirs now: no longer open to anyone holding the id.
+        assert client.get(f"/api/games/{game_id}").status_code == 404
+
+    def test_signing_in_after_a_guess_does_not(self, client, sign_in, answer):
+        answer("crane")
+        game_id = new_game(client)["game_id"]
+        guess(client, game_id, "state")
+        player = sign_in("google|1")
+        assert player.get(f"/api/games/{game_id}").json()["owned"] is False
+        assert guess(player, game_id, "crane").json()["owned"] is False
+        assert self._stats(player)["games"] == 0
+
+    def test_taking_over_a_game_abandons_the_open_one(self, client, sign_in, answer):
+        answer("crane")
+        player = sign_in("google|1")
+        self._play(player, "state", "tasty")  # open, two guesses
+        anonymous = new_game(client)["game_id"]
+        player.get(f"/api/games/{anonymous}")
+        assert self._stats(player)["losses"] == 1
 
     def test_a_new_game_in_the_same_combination_abandons_the_open_one(self, sign_in, answer):
         answer("crane")

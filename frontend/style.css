@@ -141,6 +141,14 @@ main {
 
 /* --- Board --- */
 
+.game-note {
+  margin: 0;
+  max-width: 340px;
+  font-size: .8rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 .board {
   display: grid;
   gap: var(--gap);

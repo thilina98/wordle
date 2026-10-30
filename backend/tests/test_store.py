@@ -7,7 +7,7 @@ specific to durability live in TestSqliteDurability at the bottom.
 import pytest
 
 from wordle.game import Difficulty, GameState
-from wordle.store import InMemoryGameStore, SqliteGameStore
+from wordle.store import InMemoryGameStore, Ownership, SqliteGameStore
 
 VOCABULARY = frozenset({"crane", "state", "tasty"})
 
@@ -298,6 +298,51 @@ class TestResultsWaitingToBeRecorded:
         store.save(game_id, played(store.get(game_id, viewer=self.OWNER), "crane"))
         store.delete_owned_by(self.OWNER)
         assert store.pending_results() == []
+
+
+class TestClaiming:
+    """A player who signs in before their first guess takes over the anonymous game."""
+
+    def test_an_anonymous_game_with_no_guesses_is_claimed(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.claim(game_id, "player-1") is Ownership.CLAIMED
+        assert store.get(game_id, viewer="player-1") is not None
+        assert store.get(game_id) is None  # no longer open to anyone
+
+    def test_a_claimed_game_counts_once_finished(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        store.claim(game_id, "player-1")
+        store.save(game_id, played(store.get(game_id, viewer="player-1"), "crane"))
+        assert [p.owner for p in store.pending_results()] == ["player-1"]
+
+    def test_claiming_your_own_game_leaves_it_yours(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-1")
+        assert store.claim(game_id, "player-1") is Ownership.OWNED
+
+    def test_a_game_with_a_guess_stays_anonymous(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        store.save(game_id, played(store.get(game_id), "state"))
+        assert store.claim(game_id, "player-1") is Ownership.NOT_OWNED
+        assert store.get(game_id) is not None  # still anyone's
+
+    def test_someone_elses_game_is_never_taken(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game(), owner="player-2")
+        assert store.claim(game_id, "player-1") is Ownership.NOT_OWNED
+        assert store.get(game_id, viewer="player-2") is not None
+
+    def test_the_first_claim_wins(self, make_store):
+        store = make_store()
+        game_id = store.create(a_game())
+        assert store.claim(game_id, "player-1") is Ownership.CLAIMED
+        assert store.claim(game_id, "player-2") is Ownership.NOT_OWNED
+
+    def test_an_unknown_game_is_not_owned(self, make_store):
+        assert make_store().claim("nope", "player-1") is Ownership.NOT_OWNED
 
 
 class TestSqliteDurability:

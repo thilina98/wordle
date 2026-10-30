@@ -356,7 +356,12 @@ change never loses the original score.
 
 A signed-in player's finished games are kept in PostgreSQL, one row each, and
 added up per player, word length and difficulty. Anonymous games are never
-recorded, and cannot be claimed after signing in.
+recorded.
+
+A game started signed out becomes the player's if they sign in before its
+first guess, and then counts. After a guess it stays anonymous, so nobody can
+sign in only for the games that are going well; the board says so
+(`owned: false`) and the page shows a note.
 
 ```
 GET /api/players/me/stats                                   every game

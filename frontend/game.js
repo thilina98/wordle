@@ -21,6 +21,7 @@ const REVEAL_TURN = 240;   // point in the flip where the colour appears, ms
  */
 export function createGame({ account }) {
   const board = document.getElementById('board');
+  const note = document.getElementById('game-note');
   const result = document.getElementById('result');
   const resultTitle = document.getElementById('result-title');
   const resultScore = document.getElementById('result-score');
@@ -115,6 +116,9 @@ export function createGame({ account }) {
       }
     }
     keyboard.paint(view.letter_states);
+    // Only a signed-in player has stats for a game to miss. Their game is not
+    // theirs only when they started it signed out and guessed before signing in.
+    note.hidden = !account.isSignedIn() || view.owned;
   }
 
   function rejectRow() {

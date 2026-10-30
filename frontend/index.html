@@ -21,6 +21,9 @@
 
   <main>
     <!-- Tiles and keys are built by game.js and keyboard.js from the board the API returns. -->
+    <p id="game-note" class="game-note" hidden>
+      This game started before you signed in, so it won't count in your stats.
+    </p>
     <div id="board" class="board" role="grid" aria-label="Guesses"></div>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <div id="keyboard" class="keyboard" aria-label="Keyboard"></div>

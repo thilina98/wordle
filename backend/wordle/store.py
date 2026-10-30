@@ -22,6 +22,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -40,6 +41,17 @@ MIN_GUESSES_TO_ABANDON = 2
 # record yet: the game is still being played, or was never owned.
 _PENDING = "pending"
 _RECORDED = "recorded"
+
+
+class Ownership(StrEnum):
+    """Whose a game is, as `claim` leaves it for the player asking."""
+
+    #: Theirs from now on: it was anonymous and nothing had been guessed.
+    CLAIMED = "claimed"
+    #: Already theirs.
+    OWNED = "owned"
+    #: Not theirs: anonymous with guesses made, someone else's, or unknown.
+    NOT_OWNED = "not_owned"
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +108,18 @@ class GameStore(Protocol):
 
     def delete_owned_by(self, owner: str) -> int:
         """Remove every game this player owns, pending or not. Returns how many went."""
+        ...
+
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        """Make an anonymous game `owner`'s, if nothing has been guessed in it yet.
+
+        A player who signs in part way through a game they started signed out
+        keeps playing it as theirs, so it counts in their statistics. Only
+        before the first guess: after it, the player has seen feedback, and
+        claiming then would let them sign in only for the games going well.
+
+        Safe to call on every request: an owned game is left alone.
+        """
         ...
 
     def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
@@ -223,6 +247,18 @@ class InMemoryGameStore:
             for game_id in owned:
                 del self._entries[game_id]
             return len(owned)
+
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        with self._lock:
+            entry = self._entries.get(game_id)
+            if entry is None or entry.abandoned_at is not None:
+                return Ownership.NOT_OWNED
+            if entry.owner == owner:
+                return Ownership.OWNED
+            if entry.owner is None and not entry.game.attempts:
+                entry.owner = owner
+                return Ownership.CLAIMED
+            return Ownership.NOT_OWNED
 
     def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
         with self._lock:
@@ -490,6 +526,23 @@ class SqliteGameStore:
     def delete_owned_by(self, owner: str) -> int:
         with self._lock:
             return self._conn.execute("DELETE FROM games WHERE owner_id = ?", (owner,)).rowcount
+
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        with self._lock:
+            # Conditional, so a game guessed in or claimed by another request
+            # in the meantime is never taken.
+            claimed = self._conn.execute(
+                "UPDATE games SET owner_id = ? WHERE id = ? AND owner_id IS NULL"
+                " AND abandoned_at IS NULL AND json_array_length(attempts) = 0",
+                (owner, game_id),
+            ).rowcount
+            if claimed:
+                return Ownership.CLAIMED
+            row = self._conn.execute(
+                "SELECT 1 FROM games WHERE id = ? AND owner_id = ? AND abandoned_at IS NULL",
+                (game_id, owner),
+            ).fetchone()
+            return Ownership.OWNED if row else Ownership.NOT_OWNED
 
     def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
         now = self._clock()

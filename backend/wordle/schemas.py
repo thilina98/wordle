@@ -90,9 +90,14 @@ class GameView(BaseModel):
     answer: str | None = None
     #: Null until the game is over. There is no score for a game in progress.
     score: ScoreView | None = None
+    #: Whether the game belongs to the player asking. An owned game counts in
+    #: their statistics. Always false for an anonymous player; false for a
+    #: signed-in one only when they started it signed out and guessed in it
+    #: before signing in.
+    owned: bool = False
 
     @classmethod
-    def of(cls, game_id: str, game: GameState, rules: ScoringRules) -> GameView:
+    def of(cls, game_id: str, game: GameState, rules: ScoringRules, *, owned: bool) -> GameView:
         score = score_for(game, rules)
         return cls(
             game_id=game_id,
@@ -105,6 +110,7 @@ class GameView(BaseModel):
             letter_states=game.letter_states,
             answer=game.target if game.is_over else None,
             score=ScoreView.of(score) if score else None,
+            owned=owned,
         )
 
 
