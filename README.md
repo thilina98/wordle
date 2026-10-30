@@ -55,6 +55,8 @@ mkdir -p backend/secrets              # only needed for sign-in; see backend/ACC
 python3 -c "import secrets; print(secrets.token_urlsafe(32), end='')" > backend/secrets/wordle_database_password
 printf "%s" "PASTE_DELETION_APP_CLIENT_SECRET" > backend/secrets/wordle_auth0_deletion_app_client_secret   # see backend/ACCOUNTS.md
 chmod 600 backend/secrets/wordle_*
+
+git config core.hooksPath .githooks   # blocks commits and pushes to master; see .githooks/
 ```
 
 **Terminal 1 — the API:**
