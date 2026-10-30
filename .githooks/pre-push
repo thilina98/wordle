@@ -1,0 +1,14 @@
+#!/bin/sh
+. "$(dirname "$0")/protected-branches.sh"
+
+# Git sends one line per ref being pushed: <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+  branch=${remote_ref#refs/heads/}
+  if is_protected "$branch"; then
+    warn "" \
+      "✋ Push blocked: '$branch' on '$1' is a protected branch." \
+      "   Push your own branch and open a pull request instead." \
+      ""
+    exit 1
+  fi
+done
