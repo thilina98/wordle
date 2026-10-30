@@ -11,16 +11,20 @@
  * localStorage so a reload or a second tab stays signed in.
  *
  * Without auth settings in config.js, sign-in is off and `enabled` is false.
+ *
+ * Every page sends the provider back to the site's home page, so only one
+ * address has to be registered with the provider, whichever page the player
+ * signed in from.
  */
 
-'use strict';
+/* global oidc -- the vendored oidc-client-ts, loaded by a classic script tag. */
 
-const WordleAuth = (() => {
+export const auth = (() => {
   const settings = window.WORDLE_CONFIG && window.WORDLE_CONFIG.auth;
   const enabled = Boolean(settings && settings.issuer && settings.clientId && settings.audience);
 
-  // The page itself is where the provider sends the player back to.
-  const home = `${window.location.origin}${window.location.pathname}`;
+  // The site's home page: the directory this page is served from.
+  const home = new URL('./', window.location.href).href;
 
   let manager = null;
   let user = null;
@@ -55,7 +59,7 @@ const WordleAuth = (() => {
 
   /** Drop the provider's code and state from the address bar. */
   function cleanAddressBar() {
-    window.history.replaceState(null, '', home + window.location.hash);
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash);
   }
 
   return {
@@ -101,7 +105,7 @@ const WordleAuth = (() => {
       return (user && user.profile && (user.profile.name || user.profile.nickname)) || '';
     },
 
-    /** Leave for the provider's sign-in page. The player comes back to this page. */
+    /** Leave for the provider's sign-in page. The player comes back to the home page. */
     signIn() {
       return manager.signinRedirect();
     },

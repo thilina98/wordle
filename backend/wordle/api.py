@@ -11,12 +11,14 @@ from __future__ import annotations
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 
 from .accounts import AccountsUnavailable, AuthenticationError, Player
-from .game import GameOverError, GameState, InvalidGuessError
-from .schemas import CreateGameRequest, GameView, GuessRequest, PlayerView
-from .store import GameStore
+from .game import Difficulty, GameOverError, GameState, InvalidGuessError
+from .schemas import CreateGameRequest, GameView, GuessRequest, PlayerView, StatsView
+from .scoring import ScoringRules
+from .stats import ResultRecorder, StatsUnavailable
+from .store import GameStore, Ownership
 from .words import WordCatalogue
 
 router = APIRouter(prefix="/api", tags=["wordle"])
@@ -28,6 +30,15 @@ def _store(request: Request) -> GameStore:
 
 def _catalogue(request: Request) -> WordCatalogue:
     return request.app.state.catalogue
+
+
+def _rules(request: Request) -> ScoringRules:
+    return request.app.state.scoring_rules.current()
+
+
+def _recorder(request: Request) -> ResultRecorder | None:
+    """None when there are no statistics: no sign-in, so no one to keep them for."""
+    return request.app.state.recorder
 
 
 def current_player(
@@ -81,12 +92,35 @@ def _now() -> float:
     return time.time()
 
 
-def _load_game(request: Request, game_id: str, player: Player | None) -> GameState:
-    game = _store(request).get(game_id, viewer=_viewer(player))
+def _load_game(request: Request, game_id: str, player: Player | None) -> tuple[GameState, bool]:
+    """The game, and whether it belongs to the player (and so counts in their statistics).
+
+    A signed-in player takes over an anonymous game they open before its
+    first guess: they started it signed out, and play it signed in.
+    """
+    store = _store(request)
+    ownership = store.claim(game_id, player.player_id) if player else Ownership.NOT_OWNED
+    game = store.get(game_id, viewer=_viewer(player))
     if game is None:
         # Expired, never-existed and someone else's look the same on purpose.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Game not found")
-    return game
+    if ownership is Ownership.CLAIMED:
+        # Taking a game over is starting it, as far as abandoning goes.
+        _abandon_open_games(request, player, game)
+    return game, ownership is not Ownership.NOT_OWNED
+
+
+def _abandon_open_games(request: Request, player: Player, game: GameState) -> None:
+    """End the player's open game in this game's mode and difficulty, as a loss.
+
+    Recorded now, before the new game can end, so streaks count in the order
+    the games were played.
+    """
+    recorder = _recorder(request)
+    if recorder is None:
+        return
+    if _store(request).abandon_open_games(player.player_id, game.word_length, game.difficulty):
+        recorder.flush()
 
 
 # --- Accounts -------------------------------------------------------------
@@ -119,7 +153,31 @@ def delete_my_player(request: Request, player: SignedInPlayer) -> None:
         ) from exc
     # After the player, so a database outage leaves everything as it was.
     # Games left over by a failure here are unreachable and expire anyway.
+    # Their statistics went with the player (ON DELETE CASCADE).
     _store(request).delete_owned_by(player.player_id)
+
+
+@router.get("/players/me/stats", response_model=StatsView)
+def read_my_stats(
+    request: Request,
+    player: SignedInPlayer,
+    word_length: Annotated[int | None, Query(ge=2, le=32)] = None,
+    difficulty: Difficulty | None = None,
+) -> StatsView:
+    """The signed-in player's statistics, optionally narrowed to a mode and difficulty.
+
+    Leave both out for every game; give one to see it across the other; give
+    both for one combination, which is the only filter that has streaks.
+    """
+    try:
+        summary = request.app.state.stats.summary(
+            player.player_id, word_length=word_length, difficulty=difficulty
+        )
+    except StatsUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Statistics are unavailable. Try again shortly."
+        ) from exc
+    return StatsView.of(summary)
 
 
 # --- Game -----------------------------------------------------------------
@@ -159,13 +217,18 @@ def create_game(
         # exists because the domain's limits are the real ones: the route
         # should answer for them rather than assume the edge caught everything.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return GameView.of(_store(request).create(game, owner=_viewer(player)), game)
+
+    if player:
+        _abandon_open_games(request, player, game)
+    game_id = _store(request).create(game, owner=_viewer(player))
+    return GameView.of(game_id, game, _rules(request), owned=player is not None)
 
 
 @router.get("/games/{game_id}", response_model=GameView)
 def read_game(request: Request, game_id: str, player: MaybePlayer) -> GameView:
     """Current board, for resuming after a reload."""
-    return GameView.of(game_id, _load_game(request, game_id, player))
+    game, owned = _load_game(request, game_id, player)
+    return GameView.of(game_id, game, _rules(request), owned=owned)
 
 
 @router.post("/games/{game_id}/start", response_model=GameView)
@@ -177,10 +240,10 @@ def start_game(request: Request, game_id: str, player: MaybePlayer) -> GameView:
     time spent playing. Idempotent, so the client may call it on every
     keystroke and only the first one counts.
     """
-    game = _load_game(request, game_id, player)
+    game, owned = _load_game(request, game_id, player)
     game.start_timer(_now())
     _store(request).save(game_id, game)
-    return GameView.of(game_id, game)
+    return GameView.of(game_id, game, _rules(request), owned=owned)
 
 
 @router.post("/games/{game_id}/guesses", response_model=GameView)
@@ -191,7 +254,7 @@ def submit_guess(
     player: MaybePlayer,
 ) -> GameView:
     """Score one guess and return the updated board."""
-    game = _load_game(request, game_id, player)
+    game, owned = _load_game(request, game_id, player)
     try:
         game.guess(payload.guess, now=_now())
     except GameOverError as exc:
@@ -201,4 +264,10 @@ def submit_guess(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     _store(request).save(game_id, game)
-    return GameView.of(game_id, game)
+    recorder = _recorder(request)
+    if player and recorder and game.is_over:
+        # The save left it waiting to be recorded; record it now. An outage
+        # leaves it waiting, and the player still gets their board.
+        recorder.flush()
+    # After recording, which refreshes the rules if the active version moved.
+    return GameView.of(game_id, game, _rules(request), owned=owned)

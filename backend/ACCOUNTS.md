@@ -110,10 +110,13 @@ provider's id, not the email: nothing there identifies a person.
 
 ## Database schema
 
-`wordle/accounts/migrations/0001_players.sql` and `0002_deleted_identities.sql`.
-Migrations run automatically
-at startup, under an advisory lock so two servers starting together do not
-race. Applied versions are recorded in `schema_migrations`.
+`wordle/db/migrations/0001_players.sql` and `0002_deleted_identities.sql`.
+Every module's migrations share that one folder (statistics is `0003`), and
+`wordle.db.Database` owns the connection pool they all borrow. Migrations run
+automatically at startup, under an advisory lock so two servers starting
+together do not race. Applied versions are recorded in `schema_migrations`.
+Migrations change the schema only; data changes are data scripts, in
+`wordle/db/data_scripts/`, run by hand (see the main README).
 
 ```
 players                              player_identities
@@ -219,9 +222,8 @@ again.
 
 ```bash
 docker run -d --name wordle-test-db -e POSTGRES_PASSWORD=test -p 55432:5432 postgres:17-alpine
-WORDLE_TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres \
-  .venv/bin/pytest tests/test_accounts.py
+WORDLE_TEST_DATABASE_URL=postgresql://postgres:test@localhost:55432/postgres .venv/bin/pytest tests/test_accounts.py tests/test_stats.py
 ```
 
-The tests drop and recreate the accounts tables. Never point them at a real
+The tests drop and recreate every table. Never point them at a real
 database.

@@ -4,11 +4,17 @@ Two adapters behind the GameStore protocol: SQLite on a mounted volume, which
 is the default, and an in-memory store for tests and throwaway runs. Anything
 that needs a game goes through the protocol, so a third (Redis, say) drops in
 without touching the API layer.
+
+Besides games in progress, the store holds signed-in players' games that are
+over but not yet written to the statistics database. They wait here, safe
+from expiry, until something records them: so a statistics outage delays a
+result, and never loses one.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import sqlite3
 import threading
@@ -16,22 +22,64 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from .game import Attempt, Colour, GameState
+from .game import Attempt, Colour, Difficulty, GameState, difficulty_of
+
+log = logging.getLogger("wordle.store")
 
 DEFAULT_TTL_SECONDS = 60 * 60 * 4
 DEFAULT_MAX_GAMES = 10_000
 
+#: A game left with fewer guesses than this is not worth recording. One guess
+#: tells the player almost nothing, so walking away from it is not a loss.
+MIN_GUESSES_TO_ABANDON = 2
+
+# What happened to an owned game's result. No state means there is nothing to
+# record yet: the game is still being played, or was never owned.
+_PENDING = "pending"
+_RECORDED = "recorded"
+
+
+class Ownership(StrEnum):
+    """Whose a game is, as `claim` leaves it for the player asking."""
+
+    #: Theirs from now on: it was anonymous and nothing had been guessed.
+    CLAIMED = "claimed"
+    #: Already theirs.
+    OWNED = "owned"
+    #: Not theirs: anonymous with guesses made, someone else's, or unknown.
+    NOT_OWNED = "not_owned"
+
+
+@dataclass(frozen=True, slots=True)
+class PendingResult:
+    """An owned game waiting to be recorded: finished, or abandoned mid-play."""
+
+    game_id: str
+    owner: str
+    game: GameState
+    #: When it ended: its last guess, or when it was abandoned.
+    ended_at: float
+    abandoned: bool
+
 
 class GameStore(Protocol):
-    """Storage for games in progress.
+    """Storage for games in progress, and for results not yet recorded.
 
     A game may have an owner: the player who started it while signed in. An
     owned game is visible to its owner only. An unowned game, started
     anonymously, is visible to anyone holding its id, as every game was before
     accounts existed.
+
+    An owned game becomes pending -- waiting to be recorded -- when it is
+    saved finished, or when it is abandoned with at least two guesses made.
+    Abandoning happens when its owner starts another game of the same word
+    length and difficulty (`abandon_open_games`), or when it expires or is
+    evicted. A pending game is never expired or evicted. An abandoned game can
+    no longer be fetched or played.
     """
 
     def create(self, game: GameState, owner: str | None = None) -> str:
@@ -41,14 +89,17 @@ class GameStore(Protocol):
     def get(self, game_id: str, viewer: str | None = None) -> GameState | None:
         """Fetch a live game that `viewer` may see.
 
-        None if the game is unknown, expired, or owned by someone other than
-        `viewer`. The three look the same on purpose: a game id must not
-        reveal whether someone else's game exists.
+        None if the game is unknown, expired, abandoned, or owned by someone
+        other than `viewer`. These look the same on purpose: a game id must
+        not reveal whether someone else's game exists.
         """
         ...
 
     def save(self, game_id: str, game: GameState) -> None:
-        """Persist changes to a game already in the store."""
+        """Persist changes to a game already in the store.
+
+        An owned game saved finished becomes pending.
+        """
         ...
 
     def delete(self, game_id: str) -> None:
@@ -56,7 +107,43 @@ class GameStore(Protocol):
         ...
 
     def delete_owned_by(self, owner: str) -> int:
-        """Remove every game this player owns. Returns how many went."""
+        """Remove every game this player owns, pending or not. Returns how many went."""
+        ...
+
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        """Make an anonymous game `owner`'s, if nothing has been guessed in it yet.
+
+        A player who signs in part way through a game they started signed out
+        keeps playing it as theirs, so it counts in their statistics. Only
+        before the first guess: after it, the player has seen feedback, and
+        claiming then would let them sign in only for the games going well.
+
+        Safe to call on every request: an owned game is left alone.
+        """
+        ...
+
+    def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
+        """Abandon this player's unfinished games at this word length and difficulty.
+
+        Games with fewer than two guesses are left as they are. Returns how
+        many were abandoned.
+        """
+        ...
+
+    def pending_results(self, limit: int = 100) -> list[PendingResult]:
+        """Games waiting to be recorded, the earliest ended first.
+
+        Earliest first because the order results are recorded in is the order
+        streaks are counted in.
+        """
+        ...
+
+    def mark_recorded(self, game_id: str) -> None:
+        """The game's result is safely recorded.
+
+        A finished game stays, so its board can still be shown, and expires as
+        usual. An abandoned game goes.
+        """
         ...
 
 
@@ -65,11 +152,27 @@ def _visible(owner: str | None, viewer: str | None) -> bool:
     return owner is None or owner == viewer
 
 
+def _abandonable(owner: str | None, game: GameState, state: str | None) -> bool:
+    """An owned game, still being played, with enough guesses made to count."""
+    return (
+        owner is not None
+        and state is None
+        and not game.is_over
+        and len(game.attempts) >= MIN_GUESSES_TO_ABANDON
+    )
+
+
 @dataclass(slots=True)
 class _Entry:
     game: GameState
     touched_at: float
     owner: str | None = None
+    #: Wall-clock time of the last touch. `touched_at` runs on the store's own
+    #: clock, which need not be a wall clock; this is what an abandoned game
+    #: records as its end.
+    touched_wall: float = 0.0
+    state: str | None = None
+    abandoned_at: float | None = None
 
 
 class InMemoryGameStore:
@@ -88,10 +191,12 @@ class InMemoryGameStore:
         ttl_seconds: float = DEFAULT_TTL_SECONDS,
         max_games: int = DEFAULT_MAX_GAMES,
         clock: Callable[[], float] = time.monotonic,
+        wall_clock: Callable[[], float] = time.time,
     ) -> None:
         self._ttl = ttl_seconds
         self._max_games = max_games
         self._clock = clock
+        self._wall_clock = wall_clock
         self._lock = threading.Lock()
         self._entries: OrderedDict[str, _Entry] = OrderedDict()
 
@@ -99,27 +204,38 @@ class InMemoryGameStore:
         game_id = secrets.token_urlsafe(16)
         with self._lock:
             self._purge_expired()
-            self._entries[game_id] = _Entry(game=game, touched_at=self._clock(), owner=owner)
-            # Drop the least recently used until we are back within capacity.
-            while len(self._entries) > self._max_games:
-                self._entries.popitem(last=False)
+            self._entries[game_id] = _Entry(
+                game=game, touched_at=self._clock(), owner=owner, touched_wall=self._wall_clock()
+            )
+            # Retire the least recently used until we are back within capacity.
+            # Pending games are kept, so this can stop short of the bound.
+            for old_id in list(self._entries)[: max(0, len(self._entries) - self._max_games)]:
+                self._retire(old_id)
         return game_id
 
     def get(self, game_id: str, viewer: str | None = None) -> GameState | None:
         with self._lock:
             entry = self._entries.get(game_id)
-            if entry is None or not _visible(entry.owner, viewer):
+            if entry is None or entry.abandoned_at is not None:
+                return None
+            if not _visible(entry.owner, viewer):
                 return None
             now = self._clock()
             if now - entry.touched_at > self._ttl:
-                del self._entries[game_id]
+                self._retire(game_id)
                 return None
             entry.touched_at = now
+            entry.touched_wall = self._wall_clock()
             self._entries.move_to_end(game_id)
             return entry.game
 
     def save(self, game_id: str, game: GameState) -> None:
-        """No-op: `get` handed out the live object, so it is already current."""
+        """`get` handed out the live object, so only the record state can change."""
+        with self._lock:
+            entry = self._entries.get(game_id)
+            if entry is not None and entry.owner is not None and entry.state is None:
+                if game.is_over:
+                    entry.state = _PENDING
 
     def delete(self, game_id: str) -> None:
         with self._lock:
@@ -132,16 +248,88 @@ class InMemoryGameStore:
                 del self._entries[game_id]
             return len(owned)
 
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        with self._lock:
+            entry = self._entries.get(game_id)
+            if entry is None or entry.abandoned_at is not None:
+                return Ownership.NOT_OWNED
+            if entry.owner == owner:
+                return Ownership.OWNED
+            if entry.owner is None and not entry.game.attempts:
+                entry.owner = owner
+                return Ownership.CLAIMED
+            return Ownership.NOT_OWNED
+
+    def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
+        with self._lock:
+            now = self._wall_clock()
+            abandoned = 0
+            for entry in self._entries.values():
+                if (
+                    entry.owner == owner
+                    and entry.abandoned_at is None
+                    and entry.game.word_length == word_length
+                    and entry.game.difficulty == difficulty
+                    and _abandonable(entry.owner, entry.game, entry.state)
+                ):
+                    entry.state, entry.abandoned_at = _PENDING, now
+                    abandoned += 1
+            return abandoned
+
+    def pending_results(self, limit: int = 100) -> list[PendingResult]:
+        with self._lock:
+            pending = [
+                PendingResult(
+                    game_id=game_id,
+                    owner=entry.owner,
+                    game=entry.game,
+                    ended_at=_ended_at(entry),
+                    abandoned=entry.abandoned_at is not None,
+                )
+                for game_id, entry in self._entries.items()
+                if entry.state == _PENDING
+            ]
+        return sorted(pending, key=lambda p: p.ended_at)[:limit]
+
+    def mark_recorded(self, game_id: str) -> None:
+        with self._lock:
+            entry = self._entries.get(game_id)
+            if entry is None or entry.state != _PENDING:
+                return
+            if entry.abandoned_at is not None:
+                del self._entries[game_id]
+            else:
+                entry.state = _RECORDED
+
+    def _retire(self, game_id: str) -> None:
+        """Expire or evict one game. Caller holds the lock.
+
+        A game that is abandoned by this is kept for recording; a pending one
+        is kept as it is; anything else goes.
+        """
+        entry = self._entries[game_id]
+        if _abandonable(entry.owner, entry.game, entry.state):
+            entry.state, entry.abandoned_at = _PENDING, entry.touched_wall
+        if entry.state != _PENDING:
+            del self._entries[game_id]
+
     def _purge_expired(self) -> None:
         """Caller holds the lock."""
         cutoff = self._clock() - self._ttl
-        expired = [gid for gid, e in self._entries.items() if e.touched_at < cutoff]
-        for game_id in expired:
-            del self._entries[game_id]
+        for game_id in [gid for gid, e in self._entries.items() if e.touched_at < cutoff]:
+            self._retire(game_id)
 
     def __len__(self) -> int:
         with self._lock:
             return len(self._entries)
+
+
+def _ended_at(entry: _Entry) -> float:
+    if entry.abandoned_at is not None:
+        return entry.abandoned_at
+    if entry.game.finished_at is not None:
+        return entry.game.finished_at
+    return entry.touched_wall
 
 
 class SqliteGameStore:
@@ -167,7 +355,9 @@ class SqliteGameStore:
             touched_at   REAL    NOT NULL,
             started_at   REAL,
             finished_at  REAL,
-            owner_id     TEXT
+            owner_id     TEXT,
+            record_state TEXT,
+            abandoned_at REAL
         );
         CREATE INDEX IF NOT EXISTS games_touched_at ON games (touched_at);
     """
@@ -177,7 +367,24 @@ class SqliteGameStore:
     #: these have to be put on by hand. Games in flight keep playing; they just
     #: score as untimed.
     #: owner_id arrived with accounts; a game from before it is unowned.
-    _ADDED_COLUMNS = (("started_at", "REAL"), ("finished_at", "REAL"), ("owner_id", "TEXT"))
+    #: record_state and abandoned_at arrived with statistics; a game from
+    #: before them has nothing to record until it is saved again.
+    _ADDED_COLUMNS = (
+        ("started_at", "REAL"),
+        ("finished_at", "REAL"),
+        ("owner_id", "TEXT"),
+        ("record_state", "TEXT"),
+        ("abandoned_at", "REAL"),
+    )
+
+    #: Columns `_load` reads, in its order.
+    _GAME_COLUMNS = "target, max_attempts, attempts, started_at, finished_at"
+
+    #: An owned game, still being played, with enough guesses to be worth recording.
+    _ABANDONABLE = (
+        "owner_id IS NOT NULL AND record_state IS NULL AND finished_at IS NULL"
+        f" AND json_array_length(attempts) >= {MIN_GUESSES_TO_ABANDON}"
+    )
 
     def __init__(
         self,
@@ -271,14 +478,14 @@ class SqliteGameStore:
         now = self._clock()
         with self._lock:
             row = self._conn.execute(
-                "SELECT target, max_attempts, attempts, started_at, finished_at, touched_at,"
-                " owner_id FROM games WHERE id = ?",
+                f"SELECT {self._GAME_COLUMNS}, touched_at, owner_id, abandoned_at"
+                " FROM games WHERE id = ?",
                 (game_id,),
             ).fetchone()
-            if row is None or not _visible(row[6], viewer):
+            if row is None or row[7] is not None or not _visible(row[6], viewer):
                 return None
             if now - row[5] > self._ttl:
-                self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
+                self._purge(now)
                 return None
             try:
                 game = self._load(row[:5])
@@ -296,9 +503,20 @@ class SqliteGameStore:
         """Write a mutated game back. Silently ignores an unknown id."""
         with self._lock:
             self._conn.execute(
-                "UPDATE games SET attempts = ?, touched_at = ?, started_at = ?, finished_at = ?"
+                "UPDATE games SET attempts = ?, touched_at = ?, started_at = ?, finished_at = ?,"
+                " record_state = CASE"
+                "   WHEN record_state IS NULL AND owner_id IS NOT NULL AND ? THEN ?"
+                "   ELSE record_state END"
                 " WHERE id = ?",
-                (self._dump(game), self._clock(), game.started_at, game.finished_at, game_id),
+                (
+                    self._dump(game),
+                    self._clock(),
+                    game.started_at,
+                    game.finished_at,
+                    game.is_over,
+                    _PENDING,
+                    game_id,
+                ),
             )
 
     def delete(self, game_id: str) -> None:
@@ -309,14 +527,105 @@ class SqliteGameStore:
         with self._lock:
             return self._conn.execute("DELETE FROM games WHERE owner_id = ?", (owner,)).rowcount
 
+    def claim(self, game_id: str, owner: str) -> Ownership:
+        with self._lock:
+            # Conditional, so a game guessed in or claimed by another request
+            # in the meantime is never taken.
+            claimed = self._conn.execute(
+                "UPDATE games SET owner_id = ? WHERE id = ? AND owner_id IS NULL"
+                " AND abandoned_at IS NULL AND json_array_length(attempts) = 0",
+                (owner, game_id),
+            ).rowcount
+            if claimed:
+                return Ownership.CLAIMED
+            row = self._conn.execute(
+                "SELECT 1 FROM games WHERE id = ? AND owner_id = ? AND abandoned_at IS NULL",
+                (game_id, owner),
+            ).fetchone()
+            return Ownership.OWNED if row else Ownership.NOT_OWNED
+
+    def abandon_open_games(self, owner: str, word_length: int, difficulty: Difficulty) -> int:
+        now = self._clock()
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, max_attempts FROM games"
+                f" WHERE owner_id = ? AND length(target) = ? AND {self._ABANDONABLE}",
+                (owner, word_length),
+            ).fetchall()
+            # Difficulty is a label worked out from the shape, so it is
+            # filtered here rather than in SQL: the mapping lives in one place.
+            ids = [
+                gid for gid, allowed in rows if difficulty_of(word_length, allowed) == difficulty
+            ]
+            for game_id in ids:
+                self._conn.execute(
+                    "UPDATE games SET record_state = ?, abandoned_at = ? WHERE id = ?",
+                    (_PENDING, now, game_id),
+                )
+            return len(ids)
+
+    def pending_results(self, limit: int = 100) -> list[PendingResult]:
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT id, owner_id, {self._GAME_COLUMNS}, abandoned_at, touched_at FROM games"
+                " WHERE record_state = ?"
+                " ORDER BY coalesce(abandoned_at, finished_at, touched_at) LIMIT ?",
+                (_PENDING, limit),
+            ).fetchall()
+            pending = []
+            for game_id, owner, *game_row, abandoned_at, touched_at in rows:
+                try:
+                    game = self._load(game_row)
+                except (ValueError, KeyError, json.JSONDecodeError):
+                    # Its word list is gone, so it cannot be rebuilt or recorded.
+                    log.warning("Dropping unrecordable game %s: its word list is gone", game_id)
+                    self._conn.execute("DELETE FROM games WHERE id = ?", (game_id,))
+                    continue
+                ended_at = abandoned_at if abandoned_at is not None else game.finished_at
+                pending.append(
+                    PendingResult(
+                        game_id=game_id,
+                        owner=owner,
+                        game=game,
+                        ended_at=ended_at if ended_at is not None else touched_at,
+                        abandoned=abandoned_at is not None,
+                    )
+                )
+            return pending
+
+    def mark_recorded(self, game_id: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM games WHERE id = ? AND record_state = ? AND abandoned_at IS NOT NULL",
+                (game_id, _PENDING),
+            )
+            self._conn.execute(
+                "UPDATE games SET record_state = ? WHERE id = ? AND record_state = ?",
+                (_RECORDED, game_id, _PENDING),
+            )
+
+    def _retire(self, where: str, params: tuple) -> None:
+        """Expire or evict the games matching `where`. Caller holds the lock.
+
+        Games this abandons are kept for recording, ending when they were last
+        touched; pending games are kept as they are; the rest go.
+        """
+        self._conn.execute(
+            "UPDATE games SET record_state = ?, abandoned_at = touched_at"
+            f" WHERE ({where}) AND {self._ABANDONABLE}",
+            (_PENDING, *params),
+        )
+        self._conn.execute(
+            f"DELETE FROM games WHERE ({where}) AND record_state IS NOT ?", (*params, _PENDING)
+        )
+
     def _purge(self, now: float) -> None:
-        self._conn.execute("DELETE FROM games WHERE touched_at < ?", (now - self._ttl,))
+        self._retire("touched_at < ?", (now - self._ttl,))
 
     def _enforce_capacity(self) -> None:
-        self._conn.execute(
-            "DELETE FROM games WHERE id IN ("
-            "  SELECT id FROM games ORDER BY touched_at DESC LIMIT -1 OFFSET ?"
-            ")",
+        # Pending games are kept, so this can stop short of the bound.
+        self._retire(
+            "id IN (SELECT id FROM games ORDER BY touched_at DESC LIMIT -1 OFFSET ?)",
             (self._max_games,),
         )
 

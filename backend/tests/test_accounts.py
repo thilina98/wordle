@@ -33,17 +33,12 @@ def repository(request):
         return
     if not TEST_DATABASE_URL:
         pytest.skip("WORDLE_TEST_DATABASE_URL not set")
-    import psycopg
-
+    from tests.postgres import fresh_database
     from wordle.accounts.postgres import PostgresPlayerRepository
 
-    with psycopg.connect(TEST_DATABASE_URL, autocommit=True) as conn:
-        conn.execute(
-            "DROP TABLE IF EXISTS deleted_identities, player_identities, players, schema_migrations"
-        )
-    repo = PostgresPlayerRepository(TEST_DATABASE_URL)
-    yield repo
-    repo.close()
+    database = fresh_database(TEST_DATABASE_URL)
+    yield PostgresPlayerRepository(database)
+    database.close()
 
 
 @pytest.fixture

@@ -9,8 +9,34 @@ from tests.fakes import FakeIdentityProvider
 from wordle.accounts import Accounts, InMemoryPlayerRepository
 from wordle.app import create_app
 from wordle.config import Settings
+from wordle.scoring import ScoringRules
+from wordle.stats import FixedScoringRules, InMemoryPlayerStats
 
 ORIGIN = "http://localhost:8080"
+#: Scoring version 1, as data script 0001_seed_scoring_version_1 seeds it.
+RULES = ScoringRules(
+    max_base=100.0,
+    last_attempt_ratio=0.2,
+    time_bonus_cap=0.20,
+    seconds_per_letter=60.0,
+    difficulty_step=1.25,
+    normal_max_score=10.0,
+    score_precision=2,
+    version=1,
+)
+#: The same rules as WORDLE_SCORING_* settings, for running without a database.
+SCORING_SETTINGS = {
+    f"scoring_{name}" if name != "score_precision" else "scoring_precision": getattr(RULES, name)
+    for name in (
+        "max_base",
+        "last_attempt_ratio",
+        "time_bonus_cap",
+        "seconds_per_letter",
+        "difficulty_step",
+        "normal_max_score",
+        "score_precision",
+    )
+}
 ANSWERS = ["crane", "state", "tasty", "abbey", "geese"]
 # Valid guesses that are deliberately not answers, so tests can tell the two
 # lists apart.
@@ -45,6 +71,7 @@ def settings(word_lists_dir, tmp_path) -> Settings:
         allowed_origins=[ORIGIN],
         # max_attempts left unset: games derive it from their word length.
         active_games_db_path=tmp_path / "state" / "games.db",
+        **SCORING_SETTINGS,
     )
 
 
@@ -64,8 +91,18 @@ def accounts(provider, players) -> Accounts:
 
 
 @pytest.fixture
-def app(settings, accounts):
-    app = create_app(settings, accounts=accounts)
+def scoring_rules() -> FixedScoringRules:
+    return FixedScoringRules(RULES)
+
+
+@pytest.fixture
+def stats(scoring_rules) -> InMemoryPlayerStats:
+    return InMemoryPlayerStats(scoring_rules)
+
+
+@pytest.fixture
+def app(settings, accounts, stats, scoring_rules):
+    app = create_app(settings, accounts=accounts, stats=stats, scoring_rules=scoring_rules)
     yield app
     # The sqlite store holds an open connection; tests do not run lifespan.
     close = getattr(app.state.store, "close", None)

@@ -40,6 +40,18 @@ def _secrets_dir() -> str | None:
     return next((str(c) for c in candidates if c.is_dir()), None)
 
 
+#: Every WORDLE_SCORING_* setting, by the ScoringRules field it fills.
+_SCORING_FIELDS = {
+    "max_base": "scoring_max_base",
+    "last_attempt_ratio": "scoring_last_attempt_ratio",
+    "time_bonus_cap": "scoring_time_bonus_cap",
+    "seconds_per_letter": "scoring_seconds_per_letter",
+    "difficulty_step": "scoring_difficulty_step",
+    "normal_max_score": "scoring_normal_max_score",
+    "score_precision": "scoring_precision",
+}
+
+
 class Settings(BaseSettings):
     # backend/.env, when run from backend/. In Docker, compose hands the same
     # file to the container as environment variables instead.
@@ -154,6 +166,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # --- Scoring constants, for running without PostgreSQL only. With a
+    # database they come from its active scoring version and these are ignored.
+    scoring_max_base: float | None = Field(default=None, gt=0)
+    scoring_last_attempt_ratio: float | None = Field(default=None, gt=0, le=1)
+    scoring_time_bonus_cap: float | None = Field(default=None, ge=0)
+    scoring_seconds_per_letter: float | None = Field(default=None, gt=0)
+    scoring_difficulty_step: float | None = Field(default=None, gt=0)
+    scoring_normal_max_score: float | None = Field(default=None, gt=0)
+    scoring_precision: int | None = Field(default=None, ge=0)
+
     @field_validator("allowed_origins", "auth_algorithms", mode="before")
     @classmethod
     def _split_list(cls, value: object) -> object:
@@ -165,6 +187,32 @@ class Settings(BaseSettings):
     @property
     def sign_in_enabled(self) -> bool:
         return self.auth_issuer is not None
+
+    @property
+    def scoring_settings(self) -> dict[str, float | int | None]:
+        """The WORDLE_SCORING_* values, keyed by ScoringRules field."""
+        return {rule: getattr(self, name) for rule, name in _SCORING_FIELDS.items()}
+
+    @property
+    def any_scoring_setting(self) -> bool:
+        return any(value is not None for value in self.scoring_settings.values())
+
+    @model_validator(mode="after")
+    def _scoring_has_a_source(self) -> Settings:
+        """Without a database, the scoring constants must all come from settings."""
+        if self.sign_in_enabled:
+            return self
+        missing = [
+            f"WORDLE_{name.upper()}"
+            for name in _SCORING_FIELDS.values()
+            if getattr(self, name) is None
+        ]
+        if missing:
+            raise ValueError(
+                "Without sign-in there is no database to read scoring from, so every "
+                f"scoring setting is required. Missing: {', '.join(missing)}"
+            )
+        return self
 
     @model_validator(mode="after")
     def _sign_in_is_complete(self) -> Settings:

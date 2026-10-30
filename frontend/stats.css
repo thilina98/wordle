@@ -1,0 +1,98 @@
+/* The statistics page. Shares the header, menu and colours in style.css. */
+
+/* The game pins itself to one screen; this page is a document and scrolls. */
+body.page {
+  height: auto;
+  min-height: 100dvh;
+  overflow: auto;
+}
+
+.stats {
+  display: block;
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  padding: 20px calc(16px + env(safe-area-inset-right)) calc(32px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
+}
+
+.stats-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stats-heading h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.secondary-link { font-size: .9rem; color: var(--muted); }
+.secondary-link:hover { color: var(--text); }
+
+.stats .toast { min-height: 0; }
+
+.stats-status { margin: 24px 0; color: var(--muted); }
+
+.stats h3 {
+  margin: 24px 0 8px;
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stats-note { margin: 6px 0 0; font-size: .75rem; color: var(--muted); }
+
+.stats-headline,
+.stats-list { margin: 0; }
+.stats-headline dd,
+.stats-list dd { margin: 0; font-variant-numeric: tabular-nums; }
+
+/* Four big numbers in a row, label underneath, as the headline. */
+.stats-headline {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-top: 16px;
+  text-align: center;
+}
+.stats-headline div { display: flex; flex-direction: column-reverse; }
+.stats-headline dd { font-size: 1.9rem; font-weight: 700; line-height: 1.1; }
+.stats-headline dt { font-size: .7rem; color: var(--muted); }
+
+/* Label left, value right, one figure per line. */
+.stats-list div {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.stats-list div:last-child { border-bottom: 0; }
+.stats-list dt { color: var(--muted); }
+.stats-list dd { font-weight: 600; }
+
+.distribution { display: grid; gap: 4px; }
+
+.distribution-row {
+  display: grid;
+  grid-template-columns: 1.4em 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: .85rem;
+  font-variant-numeric: tabular-nums;
+}
+.distribution-row > span:first-child { color: var(--muted); text-align: right; }
+
+.distribution-bar {
+  min-width: 1.8em;
+  padding: 2px 6px;
+  font-weight: 700;
+  text-align: right;
+  background: var(--hit);
+  border-radius: 3px;
+}
+.distribution-bar[data-empty] { background: var(--miss); color: var(--muted); }

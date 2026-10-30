@@ -85,6 +85,34 @@ def attempt_limit(word_length: int) -> int:
     return default_attempts(word_length) + ATTEMPT_ALLOWANCE
 
 
+class Difficulty(StrEnum):
+    """How generous a game's attempt allowance is, against its word length.
+
+    Mode is the word length; difficulty is never the length. A label, not a
+    number of attempts, because the same count means different things at
+    different lengths: four attempts is hard for five letters and normal for
+    four.
+    """
+
+    EASY = "easy"  # more attempts than letters
+    NORMAL = "normal"  # one attempt per letter
+    HARD = "hard"  # fewer attempts than letters
+
+
+def difficulty_of(word_length: int, max_attempts: int) -> Difficulty:
+    """The difficulty a game of this shape is played at.
+
+    A recorded game keeps the label it was given, so changing this mapping
+    relabels future games only.
+    """
+    normal = default_attempts(word_length)
+    if max_attempts > normal:
+        return Difficulty.EASY
+    if max_attempts < normal:
+        return Difficulty.HARD
+    return Difficulty.NORMAL
+
+
 @dataclass(frozen=True, slots=True)
 class Attempt:
     """One scored guess."""
@@ -137,6 +165,10 @@ class GameState:
     def attempt_limit(self) -> int:
         """The most attempts this game could have been given."""
         return attempt_limit(self.word_length)
+
+    @property
+    def difficulty(self) -> Difficulty:
+        return difficulty_of(self.word_length, self.max_attempts)
 
     @property
     def is_won(self) -> bool:

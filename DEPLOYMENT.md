@@ -288,6 +288,17 @@ way in (an IPv6 URL and a Tailscale URL, say).
 
 ## Step 4: start it
 
+With sign-in on, seed the scoring rules first. Once per database; the server
+refuses to start without them. Running it again only reports that it already ran.
+
+```bash
+cd /opt/wordle
+docker compose build
+docker compose run --rm api python -m wordle.db run-data-script 0001_seed_scoring_version_1
+```
+
+Then:
+
 ```bash
 cd /opt/wordle
 docker compose up -d --build
@@ -574,6 +585,9 @@ docker stats --no-stream              # what it is using
 
 # Update after pushing changes
 cd /opt/wordle && git pull && docker compose up -d --build
+
+# See which data scripts a release added, and run any marked todo before it starts
+docker compose run --rm api python -m wordle.db data-scripts
 ```
 
 **Back up** `secrets/`, `backend/.env`, `frontend/.env`, the games volume and
@@ -583,7 +597,7 @@ the player database:
 docker run --rm -v wordle-data:/data -v "$PWD":/backup alpine \
   tar czf /backup/wordle-data.tar.gz -C /data .
 
-# Players. This one matters: it is the only record of who owns what.
+# Players and their statistics. This one matters: it is the only record of who owns what.
 docker exec wordle-db pg_dump -U wordle -Fc wordle > wordle-players.dump
 ```
 

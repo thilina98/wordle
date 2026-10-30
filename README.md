@@ -152,10 +152,12 @@ variable, or from `backend/.env`. See
 | `WORDLE_ACTIVE_GAMES_DB_PATH` | `data/games.db` | The SQLite file for games being played. Mount a volume on its folder. |
 | `WORDLE_ACTIVE_GAMES_TTL_SECONDS` | `14400` | A game untouched this long is dropped. |
 | `WORDLE_ACTIVE_GAMES_MAX` | `10000` | Most games kept at once; the least recently played go first. |
+| `WORDLE_SCORING_*` | unset | Scoring constants, only when sign-in is off (no database). All seven required then; ignored with a database. See [Scoring](#scoring). |
 
 The API needs no secrets to start. Half a sign-in configuration (an issuer
 without an audience, or no database URL) stops it at startup rather than at
-the first sign-in.
+the first sign-in. So does sign-in off with a `WORDLE_SCORING_*` value missing,
+or sign-in on with no active scoring version in the database.
 
 **Secrets live in `secrets/`, never in a `.env` file** — one file per secret,
 the same directory in every environment (`/run/secrets` in Docker, `secrets/`
@@ -340,8 +342,73 @@ claim a four-second game. A game that never calls it is timed from its first
 guess; a game that never reaches the server at all is scored as if it used its
 whole window, because withholding the clock must not pay.
 
-Every constant lives in `backend/wordle/scoring.py` and nowhere else. They are
-not settings: a score has to mean the same thing in every deployment.
+The formula lives in `backend/wordle/scoring.py`; its constants do not.
+
+| Sign-in | Constants come from |
+|---|---|
+| On (PostgreSQL) | The active row in `scoring_versions`. Cached in memory, refreshed every 4 hours and whenever a recorded game sees a newer version. |
+| Off (no database) | The seven `WORDLE_SCORING_*` settings. Placeholders with version 1's values are in `backend/.env.example`. |
+
+Every recorded game keeps the scoring version it was played under, so a rule
+change never loses the original score.
+
+## Statistics
+
+A signed-in player's finished games are kept in PostgreSQL, one row each, and
+added up per player, word length and difficulty. Anonymous games are never
+recorded.
+
+A game started signed out becomes the player's if they sign in before its
+first guess, and then counts. After a guess it stays anonymous, so nobody can
+sign in only for the games that are going well; the board says so
+(`owned: false`) and the page shows a note.
+
+```
+GET /api/players/me/stats                                   every game
+GET /api/players/me/stats?word_length=5                     one mode, every difficulty
+GET /api/players/me/stats?difficulty=hard                   one difficulty, every mode
+GET /api/players/me/stats?word_length=5&difficulty=hard     one combination
+```
+
+**Mode** is the word length. **Difficulty** is the attempt allowance against
+it: `easy` (more attempts than letters), `normal` (one per letter), `hard`
+(fewer). Each game keeps the label it was played under.
+
+| Figure | Means |
+|---|---|
+| `games`, `wins`, `losses`, `win_percentage` | `losses` includes abandoned games. |
+| `first_attempt_wins`, `last_attempt_wins` | Won on attempt 1; won on the last attempt allowed. |
+| `total_score`, `highest_score` | Under the active scoring version. |
+| `average_score` | Over **scored games only**: wins on attempt 2 or later. Losses and attempt-1 wins score 0 and are left out. |
+| `fastest_win_ms`, `average_win_ms` | Wins on attempt 2 or later only. |
+| `current_streak`, `best_streak` | Wins in a row. Only when both `word_length` and `difficulty` are given; null otherwise. A loss elsewhere does not break it. |
+| `guess_distribution` | Wins by the attempt they were won on. |
+
+Figures that would divide by zero are null.
+
+**What counts.** A win or a loss counts. A game left after two or more guesses
+counts as a loss (`abandoned`); after one guess it is ignored. A game is left
+when the player starts another in the same mode and difficulty, or when it
+expires.
+
+**Nothing is lost to an outage.** A finished game waits in the SQLite store
+until PostgreSQL has it. The server retries every minute, in the order the
+games ended, and the player gets their board either way.
+
+### Data scripts
+
+Migrations change the schema and run on their own at startup. Changes to
+data are data scripts in `backend/wordle/db/data_scripts/`, run by hand, once
+each:
+
+```bash
+python -m wordle.db data-scripts                                     # list, with what has run
+python -m wordle.db run-data-script 0001_seed_scoring_version_1     # run one
+```
+
+`0001_seed_scoring_version_1` must run once before the server first starts
+with sign-in on; until then it refuses to start. In Docker, see
+[DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Game shape
 

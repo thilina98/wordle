@@ -3,8 +3,19 @@
 import pytest
 from pydantic import ValidationError
 
+from tests.conftest import SCORING_SETTINGS
 from wordle.app import create_app
 from wordle.config import Settings
+
+
+@pytest.fixture(autouse=True)
+def scoring_from_the_environment(monkeypatch):
+    """Without a database every scoring setting is required; set them all.
+
+    Tests about scoring configuration remove them again.
+    """
+    for name, value in SCORING_SETTINGS.items():
+        monkeypatch.setenv(f"WORDLE_{name.upper()}", str(value))
 
 
 @pytest.fixture
@@ -21,7 +32,7 @@ def no_secrets(tmp_path):
 
 
 def test_starts_with_no_secrets_at_all(monkeypatch, no_secrets):
-    # Anonymous play needs nothing configured; there is no shared password.
+    # Anonymous play needs no secrets; there is no shared password.
     monkeypatch.delenv("WORDLE_AUTH_ISSUER", raising=False)
     settings = Settings(_env_file=None, _secrets_dir=no_secrets)
     assert settings.sign_in_enabled is False
@@ -43,6 +54,40 @@ def test_reads_the_database_password_from_a_secret_file(tmp_path):
     (secrets / "wordle_database_password").write_text("s3cret", encoding="utf-8")
     settings = Settings(_env_file=None, _secrets_dir=str(secrets))
     assert settings.database_password == "s3cret"
+
+
+class TestScoringConfiguration:
+    """Scoring constants come from the database, or from settings when there is none."""
+
+    def test_without_a_database_every_scoring_setting_is_required(self, monkeypatch, no_secrets):
+        monkeypatch.delenv("WORDLE_SCORING_TIME_BONUS_CAP")
+        with pytest.raises(ValidationError, match="WORDLE_SCORING_TIME_BONUS_CAP"):
+            Settings(_env_file=None, _secrets_dir=no_secrets)
+
+    def test_with_a_database_no_scoring_setting_is_needed(self, monkeypatch, no_secrets):
+        for name in SCORING_SETTINGS:
+            monkeypatch.delenv(f"WORDLE_{name.upper()}")
+        settings = Settings(
+            auth_issuer="https://id.example.test/",
+            auth_audience="api",
+            database_url="postgresql://wordle@db/wordle",
+            _env_file=None,
+            _secrets_dir=no_secrets,
+        )
+        assert settings.any_scoring_setting is False
+
+    def test_scoring_settings_are_range_checked(self, monkeypatch, no_secrets):
+        monkeypatch.setenv("WORDLE_SCORING_LAST_ATTEMPT_RATIO", "1.5")
+        with pytest.raises(ValidationError, match="last_attempt_ratio"):
+            Settings(_env_file=None, _secrets_dir=no_secrets)
+
+    def test_without_a_database_the_app_scores_with_the_settings(self, settings):
+        app = create_app(settings.model_copy(update={"scoring_max_base": 50.0}))
+        try:
+            assert app.state.scoring_rules.current().max_base == 50.0
+            assert app.state.recorder is None
+        finally:
+            app.state.store.close()
 
 
 class TestSignInConfiguration:
@@ -89,11 +134,15 @@ class TestSignInConfiguration:
             == "s3cret"
         )
 
-    def test_the_app_builds_the_provider_that_is_named(self, settings, monkeypatch):
+    def test_the_app_builds_the_provider_that_is_named(
+        self, settings, monkeypatch, stats, scoring_rules
+    ):
+        from wordle import app as app_module
         from wordle.accounts import InMemoryPlayerRepository, postgres
         from wordle.accounts.auth0 import Auth0Provider
         from wordle.accounts.oidc import OidcProvider
 
+        monkeypatch.setattr(app_module, "_open_database", lambda settings: None)
         monkeypatch.setattr(
             postgres, "PostgresPlayerRepository", lambda *a, **k: InMemoryPlayerRepository()
         )
@@ -113,7 +162,11 @@ class TestSignInConfiguration:
                 Auth0Provider,
             ),
         ):
-            app = create_app(settings.model_copy(update={**common, **update}))
+            app = create_app(
+                settings.model_copy(update={**common, **update}),
+                stats=stats,
+                scoring_rules=scoring_rules,
+            )
             try:
                 assert isinstance(app.state.accounts._provider, expected)
             finally:
@@ -123,11 +176,15 @@ class TestSignInConfiguration:
         monkeypatch.setenv("WORDLE_AUTH_ALGORITHMS", "RS256, ES256")
         assert Settings(_env_file=None).auth_algorithms == ["RS256", "ES256"]
 
-    def test_the_app_builds_real_sign_in_from_settings(self, settings, monkeypatch):
-        # No network: discovery is lazy. No database: the Postgres adapter is
-        # swapped for the in-memory one, which takes no connection.
+    def test_the_app_builds_real_sign_in_from_settings(
+        self, settings, monkeypatch, stats, scoring_rules
+    ):
+        # No network: discovery is lazy. No database: the Postgres adapters are
+        # swapped for in-memory ones, which take no connection.
+        from wordle import app as app_module
         from wordle.accounts import InMemoryPlayerRepository, postgres
 
+        monkeypatch.setattr(app_module, "_open_database", lambda settings: None)
         monkeypatch.setattr(
             postgres, "PostgresPlayerRepository", lambda *a, **k: InMemoryPlayerRepository()
         )
@@ -138,7 +195,7 @@ class TestSignInConfiguration:
                 "database_url": "postgresql://wordle@db/wordle",
             }
         )
-        app = create_app(configured)
+        app = create_app(configured, stats=stats, scoring_rules=scoring_rules)
         try:
             from wordle.accounts import Accounts
 
